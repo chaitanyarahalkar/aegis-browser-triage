@@ -17,6 +17,12 @@ async function runDynamic(page: import('@playwright/test').Page) {
   await expect(page.getByText('Exit 0', { exact: true })).toBeVisible()
 }
 
+async function runYara(page: import('@playwright/test').Page) {
+  await page.getByRole('tab', { name: /^YARA/ }).click()
+  await page.getByRole('button', { name: 'Compile & scan' }).click()
+  await expect(page.getByText('Aegis_Safe_Demo', { exact: true })).toBeVisible()
+}
+
 test('runs the safe PE through static and dynamic Rust workers', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Analyze binaries locally.' })).toBeVisible()
@@ -98,9 +104,13 @@ test('analyzes the supplied ARM64 macOS fixture without crashing the worker', as
   expect(workerRequests.some((url) => url.endsWith('/assets/analyzer.worker.js'))).toBe(true)
 })
 
-test('exports a combined static and dynamic JSON report', async ({ page }) => {
+test('compiles starter YARA rules, links matches to hex, and exports the combined report', async ({ page }) => {
   await loadSafeDemo(page)
   await runDynamic(page)
+  await runYara(page)
+  await expect(page.getByText('Identifies the first-party Aegis safe test fixture', { exact: true })).toBeVisible()
+  await page.locator('.offset-link').first().click()
+  await expect(page.getByRole('heading', { name: 'Hex view' })).toBeVisible()
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Export report' }).click()
   const download = await downloadPromise
@@ -109,6 +119,20 @@ test('exports a combined static and dynamic JSON report', async ({ page }) => {
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
+  expect(json.yara.matches[0].identifier).toBe('Aegis_Safe_Demo')
+  expect(JSON.stringify(json.yara)).not.toContain('powershell.exe -NoProfile https://example.test 10.20.30.40')
+})
+
+test('shows structured YARA diagnostics without taking down static analysis', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'covered by desktop rule-editor suite')
+  await loadSafeDemo(page)
+  await page.getByRole('tab', { name: /^YARA/ }).click()
+  await page.getByLabel('YARA rule source').fill('rule broken {')
+  await page.getByRole('button', { name: 'Compile & scan' }).click()
+  await expect(page.getByRole('alert')).toContainText('YARA operation stopped')
+  await expect(page.getByRole('alert')).toContainText('syntax error')
+  await page.getByRole('tab', { name: /^Summary/ }).click()
+  await expect(page.getByRole('heading', { name: 'Findings' })).toBeVisible()
 })
 
 test('does not contact third parties or persist sample data', async ({ page }) => {

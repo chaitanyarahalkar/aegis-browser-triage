@@ -27,10 +27,12 @@ the relevant worker and drops its buffer and linear memory.
 flowchart LR
   UI["React UI"] -->|"transfer bytes"| SW["Static worker"]
   UI -->|"explicit run and transfer"| DW["Dynamic worker"]
+  UI -->|"explicit compile and scan"| YW["YARA worker"]
   SW --> SP["Rust parsers"]
   DW --> EMU["PE32 loader and x86 interpreter"]
   EMU --> VOS["Synthetic Windows APIs"]
   VOS --> REP["Behavior report"]
+  YW --> YX["YARA-X compiler and scanner"]
 ```
 
 ## Enforced controls
@@ -56,6 +58,19 @@ Dynamic analysis:
 - Unsupported instructions and invalid reads, writes, or execution become
   structured termination reasons
 
+YARA analysis:
+
+- Explicit analyst initiation in a separate, lazy-loaded worker
+- 1 MiB rule-source and 128 MiB sample limits
+- 5-second compilation and 10-second scan watchdogs enforced by worker termination
+- 10,000 compiled rules, 100 diagnostics, 5,000 matching rules, 10,000 reported
+  occurrences, and 100 occurrences per pattern
+- Includes disabled; slow patterns and loops rejected at compile time
+- Unsupported environment-facing modules rejected; PE, ELF, Mach-O, .NET, hash,
+  math, string, and time modules are bundled locally
+- Rule source is ephemeral and never fetched remotely or saved automatically
+- Reports include offsets and metadata but exclude matched sample bytes and rule source
+
 Application controls:
 
 - Parser and interpreter failures become errors or bounded reports
@@ -63,7 +78,7 @@ Application controls:
 - No telemetry, analytics, external fonts, remote reputation, or third-party assets
 - CSP limits scripts, workers, and connections to the same origin
 - No automatic localStorage, IndexedDB, OPFS, service-worker, or server persistence
-- No original sample bytes in exported reports
+- No original sample bytes or custom YARA source in exported reports
 
 `connect-src 'self'` permits workers to fetch same-origin analyzer Wasm and the
 bundled safe fixture. No guest network API maps to `fetch`, WebSocket, WebRTC, or

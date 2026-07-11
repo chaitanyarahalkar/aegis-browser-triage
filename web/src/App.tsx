@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnalysisClient } from './analysisClient'
 import { DynamicAnalysisClient } from './dynamicClient'
+import { YaraClient } from './yaraClient'
+import starterRules from './rules/aegis-starter.yar?raw'
 import { formatBytes, formatLabel, formatMetadata, formatOffset, severityCounts } from './reportUtils'
 import type {
   AnalysisReport,
@@ -10,13 +12,17 @@ import type {
   ExtractedString,
   ProgressStage,
   SymbolRecord,
+  YaraCompileSummary,
+  YaraProgressStage,
+  YaraReport,
 } from './types'
 
 const MAX_INPUT_BYTES = 128 * 1024 * 1024
 const PAGE_SIZE = 100
 type AppStatus = 'idle' | 'reading' | 'analyzing' | 'done' | 'error'
 type DynamicStatus = 'idle' | 'running' | 'done' | 'error'
-type Tab = 'summary' | 'structure' | 'symbols' | 'strings' | 'hex' | 'dynamic'
+type YaraStatus = 'idle' | 'running' | 'done' | 'error'
+type Tab = 'summary' | 'structure' | 'symbols' | 'strings' | 'hex' | 'dynamic' | 'yara'
 
 const progressLabels: Record<ProgressStage, string> = {
   'loading-engine': 'Loading analysis engine',
@@ -34,6 +40,7 @@ const dynamicProgressLabels: Record<DynamicProgressStage, string> = {
 export default function App() {
   const staticClient = useMemo(() => new AnalysisClient(), [])
   const dynamicClient = useMemo(() => new DynamicAnalysisClient(), [])
+  const yaraClient = useMemo(() => new YaraClient(), [])
   const inputRef = useRef<HTMLInputElement>(null)
   const dynamicRun = useRef(0)
   const [status, setStatus] = useState<AppStatus>('idle')
@@ -47,14 +54,23 @@ export default function App() {
   const [dynamicStage, setDynamicStage] = useState<DynamicProgressStage>('loading-engine')
   const [dynamicReport, setDynamicReport] = useState<DynamicReport | null>(null)
   const [dynamicError, setDynamicError] = useState<string | null>(null)
+  const [yaraSource, setYaraSource] = useState(starterRules)
+  const [yaraSourceName, setYaraSourceName] = useState('aegis-starter.yar')
+  const [yaraStatus, setYaraStatus] = useState<YaraStatus>('idle')
+  const [yaraStage, setYaraStage] = useState<YaraProgressStage>('loading-engine')
+  const [yaraSummary, setYaraSummary] = useState<YaraCompileSummary | null>(null)
+  const [yaraReport, setYaraReport] = useState<YaraReport | null>(null)
+  const [yaraError, setYaraError] = useState<string | null>(null)
+  const [hexTarget, setHexTarget] = useState<number | null>(null)
 
   useEffect(() => {
     staticClient.warmup()
     return () => {
       staticClient.dispose()
       dynamicClient.close()
+      yaraClient.close()
     }
-  }, [dynamicClient, staticClient])
+  }, [dynamicClient, staticClient, yaraClient])
 
   const resetDynamic = useCallback(() => {
     dynamicRun.current += 1
@@ -78,6 +94,7 @@ export default function App() {
     }
 
     resetDynamic()
+    setYaraReport(null)
     setCurrentFile(file)
     setError(null)
     setReport(null)
@@ -95,6 +112,24 @@ export default function App() {
       setStatus('error')
     }
   }, [resetDynamic, staticClient])
+
+  const compileAndScanYara = useCallback(async () => {
+    if (!currentFile) return
+    setYaraStatus('running')
+    setYaraError(null)
+    setYaraReport(null)
+    try {
+      const summary = await yaraClient.compile(yaraSource, yaraSourceName, 'Analyst rules', setYaraStage)
+      setYaraSummary(summary)
+      const buffer = await currentFile.arrayBuffer()
+      const result = await yaraClient.scan(currentFile, buffer, setYaraStage)
+      setYaraReport(result)
+      setYaraStatus('done')
+    } catch (cause) {
+      setYaraError(parseYaraError(cause))
+      setYaraStatus('error')
+    }
+  }, [currentFile, yaraClient, yaraSource, yaraSourceName])
 
   const analyzeDemo = useCallback(async () => {
     try {
@@ -147,7 +182,7 @@ export default function App() {
 
   const exportReport = () => {
     if (!report) return
-    const payload = dynamicReport ? { static: report, dynamic: dynamicReport } : { static: report }
+    const payload = { static: report, ...(dynamicReport ? { dynamic: dynamicReport } : {}), ...(yaraReport ? { yara: yaraReport } : {}) }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
@@ -222,6 +257,17 @@ export default function App() {
             onExport={exportReport}
             onRunDynamic={runDynamicAnalysis}
             onCancelDynamic={cancelDynamic}
+            yaraSource={yaraSource}
+            yaraSourceName={yaraSourceName}
+            yaraStatus={yaraStatus}
+            yaraStage={yaraStage}
+            yaraSummary={yaraSummary}
+            yaraReport={yaraReport}
+            yaraError={yaraError}
+            onYaraSource={(source, name) => { yaraClient.reset(); setYaraSource(source); setYaraSourceName(name); setYaraSummary(null); setYaraReport(null); setYaraStatus('idle'); setYaraError(null) }}
+            onRunYara={compileAndScanYara}
+            onYaraOffset={(offset) => { setHexTarget(offset); setActiveTab('hex') }}
+            hexTarget={hexTarget}
           />
         )}
       </main>
@@ -288,7 +334,7 @@ function StaticProgress({ status, stage, onCancel }: { status: AppStatus; stage:
   )
 }
 
-function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamicError, staticClient, activeTab, onTabChange, onClose, onExport, onRunDynamic, onCancelDynamic }: {
+function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamicError, staticClient, activeTab, onTabChange, onClose, onExport, onRunDynamic, onCancelDynamic, yaraSource, yaraSourceName, yaraStatus, yaraStage, yaraSummary, yaraReport, yaraError, onYaraSource, onRunYara, onYaraOffset, hexTarget }: {
   report: AnalysisReport
   dynamicReport: DynamicReport | null
   dynamicStatus: DynamicStatus
@@ -301,6 +347,17 @@ function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamic
   onExport: () => void
   onRunDynamic: () => void
   onCancelDynamic: () => void
+  yaraSource: string
+  yaraSourceName: string
+  yaraStatus: YaraStatus
+  yaraStage: YaraProgressStage
+  yaraSummary: YaraCompileSummary | null
+  yaraReport: YaraReport | null
+  yaraError: string | null
+  onYaraSource: (source: string, name: string) => void
+  onRunYara: () => void
+  onYaraOffset: (offset: number) => void
+  hexTarget: number | null
 }) {
   const tabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: 'summary', label: 'Summary', count: report.findings.length },
@@ -309,6 +366,7 @@ function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamic
     { id: 'strings', label: 'Strings', count: report.strings.length },
     { id: 'hex', label: 'Hex' },
     { id: 'dynamic', label: 'Dynamic', count: dynamicReport?.api_calls.length },
+    { id: 'yara', label: 'YARA', count: yaraReport?.matches.length },
   ]
   return (
     <section className="workspace" aria-label="Analysis report">
@@ -337,7 +395,7 @@ function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamic
         {activeTab === 'structure' && <StructureView report={report} />}
         {activeTab === 'symbols' && <SymbolsView report={report} />}
         {activeTab === 'strings' && <StringsView report={report} />}
-        {activeTab === 'hex' && <HexView client={staticClient} sampleSize={report.sample.size} />}
+        {activeTab === 'hex' && <HexView client={staticClient} sampleSize={report.sample.size} target={hexTarget} />}
         {activeTab === 'dynamic' && (
           <DynamicView
             staticReport={report}
@@ -349,6 +407,7 @@ function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamic
             onCancel={onCancelDynamic}
           />
         )}
+        {activeTab === 'yara' && <YaraView source={yaraSource} sourceName={yaraSourceName} status={yaraStatus} stage={yaraStage} summary={yaraSummary} report={yaraReport} error={yaraError} onSource={onYaraSource} onRun={onRunYara} onOffset={onYaraOffset} />}
       </div>
     </section>
   )
@@ -515,11 +574,47 @@ function StringRow({ record }: { record: ExtractedString & { kind?: string } }) 
   return <tr><td><code>{formatOffset(record.offset)}</code></td><td><span className="tag">{record.kind ?? record.encoding}</span></td><td><code className="string-value">{record.value}</code></td></tr>
 }
 
-function HexView({ client, sampleSize }: { client: AnalysisClient; sampleSize: number }) {
+function YaraView({ source, sourceName, status, stage, summary, report, error, onSource, onRun, onOffset }: {
+  source: string; sourceName: string; status: YaraStatus; stage: YaraProgressStage; summary: YaraCompileSummary | null; report: YaraReport | null; error: string | null; onSource: (source: string, name: string) => void; onRun: () => void; onOffset: (offset: number) => void
+}) {
+  const importRef = useRef<HTMLInputElement>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+  const busy = status === 'running'
+  const exportRules = () => {
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/plain' }))
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = sourceName; anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+  const importRules = async (file: File) => {
+    if (!/\.yar(a)?$/i.test(file.name)) throw new Error('Choose a .yar or .yara rule file.')
+    if (file.size > 1024 * 1024) throw new Error('Rule source exceeds the 1 MiB safety limit.')
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer())
+    setImportError(null); onSource(text, file.name)
+  }
+  return <div className="yara-layout">
+    <Section title="Rule editor" description="Rules remain in memory and are never uploaded or saved automatically.">
+      <div className="yara-toolbar"><strong>{sourceName}</strong><span>{formatBytes(new Blob([source]).size)} / 1 MiB</span><div><button className="button secondary compact" type="button" onClick={() => importRef.current?.click()}>Import</button><button className="button secondary compact" type="button" onClick={exportRules}>Export rules</button><button className="button secondary compact" type="button" onClick={() => onSource(starterRules, 'aegis-starter.yar')}>Reset starter pack</button></div></div>
+      <textarea className="yara-editor" spellCheck={false} aria-label="YARA rule source" value={source} disabled={busy} onChange={(event) => onSource(event.target.value, sourceName)} />
+      <div className="yara-run"><span>Includes disabled · slow patterns rejected · 10,000 rule maximum</span><button className="button primary" type="button" disabled={busy || !source.trim()} onClick={onRun}>{busy ? stage === 'scanning' ? 'Scanning…' : 'Compiling…' : 'Compile & scan'}</button></div>
+      <input ref={importRef} hidden type="file" accept=".yar,.yara" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importRules(file).catch((cause) => setImportError(cause instanceof Error ? cause.message : 'Rule import failed')); event.currentTarget.value = '' }} />
+    </Section>
+    {importError && <div className="notice warning-notice">{importError}</div>}
+    {error && <div className="notice error-notice yara-error" role="alert"><div><strong>YARA operation stopped</strong><span>{error}</span></div></div>}
+    {summary && <div className="stats-grid"><Stat label="Compiled rules" value={summary.rule_count.toLocaleString()} detail={summary.pack_name} /><Stat label="Rule warnings" value={summary.warnings.length.toLocaleString()} detail="Maximum 100 diagnostics" /><Stat label="Matches" value={(report?.matches.length ?? 0).toLocaleString()} detail={report ? `${report.stats.reported_occurrences} occurrences` : 'Ready to scan'} /></div>}
+    {report && <Section title="Rule matches" description={`${report.stats.matching_rules} matching rules across ${report.stats.rules_scanned} compiled rules.`}>{report.matches.length === 0 ? <EmptyState title="No YARA rules matched" text="This is evidence only, not proof that the sample is safe." /> : <div className="finding-list">{report.matches.map((match) => {
+      const description = match.metadata.find((item) => item.identifier === 'description')?.value
+      const occurrences = match.patterns.flatMap((pattern) => pattern.occurrences.map((occurrence) => ({ ...occurrence, pattern: pattern.identifier })))
+      return <article className="finding" key={`${match.namespace}-${match.identifier}`}><Severity value={match.severity} /><div><h3>{match.identifier}</h3><p>{typeof description === 'string' ? description : `${match.namespace} namespace`}</p><div className="evidence">{match.tags.map((tag) => <code key={tag}>{tag}</code>)}{occurrences.slice(0, 20).map((occurrence, index) => <button className="offset-link" type="button" key={`${occurrence.offset}-${index}`} onClick={() => onOffset(occurrence.offset)}>{occurrence.pattern} at {formatOffset(occurrence.offset)}</button>)}</div></div></article>
+    })}</div>}</Section>}
+  </div>
+}
+
+function HexView({ client, sampleSize, target }: { client: AnalysisClient; sampleSize: number; target: number | null }) {
   const pageSize = 512
   const [offset, setOffset] = useState(0)
   const [bytes, setBytes] = useState<Uint8Array>(new Uint8Array())
   const [error, setError] = useState<string | null>(null)
+  useEffect(() => { if (target != null) setOffset(Math.floor(target / pageSize) * pageSize) }, [target])
   useEffect(() => {
     let alive = true
     setError(null)
@@ -575,5 +670,15 @@ function terminationLabel(termination: DynamicTermination): string {
     case 'unsupported_instruction': return 'Unsupported instruction'
     case 'invalid_instruction': return 'Invalid instruction'
     case 'memory_fault': return 'Memory fault'
+  }
+}
+
+function parseYaraError(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  try {
+    const diagnostic = JSON.parse(message) as { message?: string; errors?: Array<{ message?: string }> }
+    return diagnostic.errors?.map((item) => item.message).filter(Boolean).join('\n') || diagnostic.message || message
+  } catch {
+    return message
   }
 }

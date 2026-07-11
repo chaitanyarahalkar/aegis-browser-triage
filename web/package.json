@@ -6,7 +6,8 @@
   "scripts": {
     "wasm:static": "wasm-pack build ../crates/analysis-wasm --target web --out-dir ../../web/src/generated/analysis-wasm --out-name analyzer",
     "wasm:dynamic": "wasm-pack build ../crates/analysis-dynamic-wasm --target web --out-dir ../../web/src/generated/analysis-dynamic-wasm --out-name dynamic_analyzer",
-    "wasm": "npm run wasm:static && npm run wasm:dynamic",
+    "wasm:yara": "wasm-pack build ../crates/analysis-yara-wasm --target web --out-dir ../../web/src/generated/analysis-yara-wasm --out-name yara_analyzer",
+    "wasm": "npm run wasm:static && npm run wasm:dynamic && npm run wasm:yara",
     "dev": "npm run wasm && vite --host 127.0.0.1",
     "build": "npm run wasm && tsc -b && vite build",
     "test": "vitest run",

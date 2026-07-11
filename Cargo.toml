@@ -3,6 +3,8 @@ members = [
     "crates/analysis-core",
     "crates/analysis-dynamic",
     "crates/analysis-dynamic-wasm",
+    "crates/analysis-yara",
+    "crates/analysis-yara-wasm",
     "crates/analysis-wasm",
 ]
 resolver = "2"
@@ -24,6 +26,7 @@ sha2 = "0.11.0"
 thiserror = "2.0.18"
 wasm-bindgen = "0.2.106"
 wasmparser = "0.253.0"
+yara-x = { version = "=1.19.0", default-features = false, features = ["constant-folding", "exact-atoms", "fast-regexp", "pe-module", "elf-module", "macho-module", "dotnet-module", "hash-module", "math-module", "string-module", "time-module"] }
 
 [profile.release]
 lto = true

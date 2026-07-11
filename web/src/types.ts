@@ -215,3 +215,31 @@ export type WorkerResponse =
   | { type: 'failed'; jobId: string; message: string }
   | { type: 'hex-slice'; requestId: string; offset: number; buffer: ArrayBuffer }
   | { type: 'ready'; maxInputBytes: number }
+
+export type YaraProgressStage = 'loading-engine' | 'compiling' | 'scanning'
+export interface YaraDiagnostic { level: string; message: string; details: unknown }
+export interface YaraCompileSummary { schema_version: number; engine_version: string; pack_name: string; source_name: string; namespace: string; source_sha256: string; rule_count: number; warnings: YaraDiagnostic[] }
+export interface YaraOccurrence { offset: number; length: number; xor_key: number | null }
+export interface YaraPatternMatch { identifier: string; kind: string; occurrences: YaraOccurrence[] }
+export interface YaraMetadata { identifier: string; value: unknown }
+export interface YaraRuleMatch { identifier: string; namespace: string; tags: string[]; metadata: YaraMetadata[]; severity: Severity; patterns: YaraPatternMatch[] }
+export interface YaraReport {
+  schema_version: number
+  engine_version: string
+  sample_name: string
+  sample_sha256: string
+  pack: { name: string; namespace: string; source_name: string; source_sha256: string; rule_count: number }
+  elapsed_ms: number
+  matches: YaraRuleMatch[]
+  stats: { rules_scanned: number; matching_rules: number; matched_patterns: number; reported_occurrences: number }
+  truncated: boolean
+}
+export type YaraWorkerRequest =
+  | { type: 'compile-yara'; jobId: string; packName: string; sourceName: string; namespace: string; source: string }
+  | { type: 'scan-yara'; jobId: string; name: string; buffer: ArrayBuffer; options: string }
+  | { type: 'reset-yara' }
+export type YaraWorkerResponse =
+  | { type: 'yara-progress'; jobId: string; stage: YaraProgressStage }
+  | { type: 'yara-compiled'; jobId: string; summary: YaraCompileSummary }
+  | { type: 'yara-completed'; jobId: string; report: YaraReport }
+  | { type: 'yara-failed'; jobId: string; message: string }

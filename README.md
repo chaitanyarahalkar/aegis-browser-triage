@@ -3,7 +3,8 @@
 Aegis is a local-only binary triage workbench that runs in the browser. A Rust
 engine performs static inspection of PE, ELF, Mach-O, and WebAssembly files. A
 second Rust engine can emulate 32-bit x86 Windows PE samples inside a dedicated
-Web Worker.
+Web Worker. A third, lazy-loaded Rust engine compiles and scans YARA rules with
+YARA-X entirely in the browser.
 
 Samples are never uploaded or executed by the host. Dynamic analysis uses an
 interpreter, an in-memory PE loader, and synthetic Windows APIs. Files, registry
@@ -28,6 +29,14 @@ Dynamic reports currently include:
 - Synthetic process, filesystem, registry, network, and memory events
 - Explainable findings derived from observed behavior
 
+YARA analysis includes:
+
+- A conservative first-party starter pack and an editable rule workspace
+- Ephemeral `.yar` / `.yara` import and local rule export
+- Structured compiler diagnostics, severity metadata, tags, and match offsets
+- Links from occurrences to the bounded hex viewer
+- PE, ELF, Mach-O, .NET, hash, math, string, and time modules
+
 This is a triage tool, not a clean or malicious verdict. The interpreter
 supports a useful subset of x86 and Windows APIs; unsupported instructions,
 malformed memory access, timeouts, and instruction limits stop safely and are
@@ -50,10 +59,10 @@ npm run build
 npm run test:e2e
 ```
 
-Open <http://127.0.0.1:4173> after `npm run preview`. `npm run dev` builds both
+Open <http://127.0.0.1:4173> after `npm run preview`. `npm run dev` builds all
 Rust engines and starts the development server. Browser tests cover desktop and
-mobile Chromium, dynamic API behavior, instruction and memory limits, CSP,
-storage, malformed input, export, and a static performance budget.
+mobile Chromium, dynamic API behavior, YARA compilation and matches, instruction
+and memory limits, CSP, storage, malformed input, export, and a static performance budget.
 
 On Homebrew systems where `rustup` is keg-only, prepend its shim directory for
 Wasm builds:
@@ -68,6 +77,8 @@ PATH="$(brew --prefix rustup)/bin:$PATH" npm run build
 - `crates/analysis-wasm`: static `wasm-bindgen` adapter
 - `crates/analysis-dynamic`: bounded PE32 loader, x86 interpreter, and virtual APIs
 - `crates/analysis-dynamic-wasm`: dynamic `wasm-bindgen` adapter
+- `crates/analysis-yara`: bounded YARA-X compiler, scanner, and report schema
+- `crates/analysis-yara-wasm`: YARA `wasm-bindgen` adapter
 - `web`: React UI, separate workers, production CSP, fixtures, and browser tests
 - `docs/security-model.md`: trust boundaries, limits, guarantees, and non-goals
 
