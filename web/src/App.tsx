@@ -414,7 +414,7 @@ export default function App() {
         </a>
         <div className="header-meta">
           <span className="quiet-status"><i /> Local only</span>
-          <span>No uploads. No host execution.</span>
+          <span>Nothing leaves this tab</span>
         </div>
       </header>
 
@@ -540,23 +540,26 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         if (file) void inspectFile(file)
       }}
     >
-      <div className="upload-copy">
-        <strong>Drop the suspicious file.</strong>
-        <span>PE, ELF, Mach-O, or WebAssembly · 128 MiB maximum</span>
-      </div>
-      <div className="button-row">
+      <div className="upload-main">
+        <div className="upload-copy">
+          <strong>Drop the suspicious file.</strong>
+          <span>PE, ELF, Mach-O, or WebAssembly · 128 MiB maximum</span>
+        </div>
         <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
-        <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzePe64Demo()}>Use safe PE64 demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzeCodeDemo()}>Use code analysis demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzePe64ParityDemo()}>Use PE64 parity demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzePe64UnpackingDemo()}>Use PE64 unpacking demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzeSehDemo()}>Use SEH demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzeThreadsDemo()}>Use threads demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzeInstructionsDemo()}>Use instruction demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzeSystemDemo()}>Use system-object demo</button>
-        <button className="button secondary" type="button" onClick={() => void analyzeNetworkDemo()}>Use network demo</button>
+      </div>
+      <div className="demo-list">
+        <span>Or try a safe demo</span>
+        <button className="demo-chip" type="button" aria-label="Use safe PE demo" onClick={() => void analyzeDemo()}>Safe PE</button>
+        <button className="demo-chip" type="button" aria-label="Use safe PE64 demo" onClick={() => void analyzePe64Demo()}>Safe PE64</button>
+        <button className="demo-chip" type="button" aria-label="Use code analysis demo" onClick={() => void analyzeCodeDemo()}>Code analysis</button>
+        <button className="demo-chip" type="button" aria-label="Use PE64 parity demo" onClick={() => void analyzePe64ParityDemo()}>PE64 parity</button>
+        <button className="demo-chip" type="button" aria-label="Use PE64 unpacking demo" onClick={() => void analyzePe64UnpackingDemo()}>PE64 unpacking</button>
+        <button className="demo-chip" type="button" aria-label="Use runtime artifact demo" onClick={() => void analyzeArtifactDemo()}>Runtime artifact</button>
+        <button className="demo-chip" type="button" aria-label="Use SEH demo" onClick={() => void analyzeSehDemo()}>SEH</button>
+        <button className="demo-chip" type="button" aria-label="Use threads demo" onClick={() => void analyzeThreadsDemo()}>Threads</button>
+        <button className="demo-chip" type="button" aria-label="Use instruction demo" onClick={() => void analyzeInstructionsDemo()}>Instruction</button>
+        <button className="demo-chip" type="button" aria-label="Use system-object demo" onClick={() => void analyzeSystemDemo()}>System-object</button>
+        <button className="demo-chip" type="button" aria-label="Use network demo" onClick={() => void analyzeNetworkDemo()}>Network</button>
       </div>
       <input
         ref={inputRef}
