@@ -37,6 +37,8 @@ Dynamic reports currently include:
   protection changes, remote threads, and APCs
 - Bounded runtime artifact capture from interesting memory, virtual files, and
   synthetic remote memory, with hashes, entropy, strings, indicators, and origins
+- Bounded unpacking lineage for distinct written/executable memory generations,
+  including parent links, execution state, executable heaps, and entry-point overwrites
 - Explicit batch YARA scanning of captured artifacts and confirmation-gated raw export
 - Explainable findings derived from observed behavior
 

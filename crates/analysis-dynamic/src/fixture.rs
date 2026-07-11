@@ -122,6 +122,7 @@ pub fn dynamic_resolution_pe32() -> Vec<u8> {
 pub fn runtime_artifact_pe32() -> Vec<u8> {
     let mut bytes = safe_dynamic_pe32();
     let payload = b"MZ AEGIS_SAFE_RUNTIME_ARTIFACT powershell https://artifact.example.test\0";
+    let stage_two = b"\x6a\x00\xff\x15\x78\x20\x40\x00\xcc AEGIS_SAFE_RUNTIME_ARTIFACT_STAGE_2\0";
     let code = [
         0x6a,
         0x04,
@@ -175,6 +176,52 @@ pub fn runtime_artifact_pe32() -> Vec<u8> {
         0x20,
         0x40,
         0x00, // VirtualProtect
+        0x68,
+        0xe0,
+        0x11,
+        0x40,
+        0x00,
+        0x6a,
+        0x04,
+        0x6a,
+        stage_two.len() as u8,
+        0x53,
+        0xff,
+        0x15,
+        0x68,
+        0x20,
+        0x40,
+        0x00, // VirtualProtect back to read/write
+        0x6a,
+        stage_two.len() as u8,
+        0x68,
+        0xc0,
+        0x11,
+        0x40,
+        0x00,
+        0x53,
+        0xff,
+        0x15,
+        0x64,
+        0x20,
+        0x40,
+        0x00, // RtlMoveMemory stage two
+        0x68,
+        0xe0,
+        0x11,
+        0x40,
+        0x00,
+        0x6a,
+        0x20,
+        0x6a,
+        stage_two.len() as u8,
+        0x53,
+        0xff,
+        0x15,
+        0x68,
+        0x20,
+        0x40,
+        0x00, // VirtualProtect stage two executable
         0x6a,
         0x00,
         0x6a,
@@ -231,6 +278,8 @@ pub fn runtime_artifact_pe32() -> Vec<u8> {
         0x20,
         0x40,
         0x00, // CloseHandle
+        0xff,
+        0xd3, // call ebx: safely re-enter stage two
         0x6a,
         0x00,
         0xff,
@@ -245,6 +294,7 @@ pub fn runtime_artifact_pe32() -> Vec<u8> {
     bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
     bytes[0x320..0x320 + payload.len()].copy_from_slice(payload);
     write_c_string(&mut bytes, 0x380, b"C:\\Temp\\aegis-runtime.bin");
+    bytes[0x3c0..0x3c0 + stage_two.len()].copy_from_slice(stage_two);
     let names = [0x2090, 0x20a0, 0x20b4, 0x20c8, 0x20d8, 0x20e8, 0x20f8, 0];
     for (index, name_rva) in names.into_iter().enumerate() {
         put_u32(&mut bytes, 0x440 + index * 4, name_rva);

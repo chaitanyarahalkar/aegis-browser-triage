@@ -239,11 +239,29 @@ export interface DynamicReport {
   persistence: DynamicPersistenceEvent[]
   artifacts: ArtifactSummary[]
   artifact_stats: { count: number; retained_bytes: number; truncated: boolean }
+  payload_generations: PayloadGeneration[]
+  generation_stats: { count: number; chains: number; executed_generations: number; truncated: boolean }
   timeline: DynamicTimelineEvent[]
   coverage: DynamicCoverage
   findings: DynamicFinding[]
   warnings: string[]
   truncated: boolean
+}
+
+export interface PayloadGeneration {
+  id: string
+  sequence: number
+  parent_id: string | null
+  artifact_id: string
+  region_base: number
+  size: number
+  capture_instruction: number
+  virtual_time_ms: number
+  trigger: string
+  permissions: string
+  executed: boolean
+  entry_point_overwrite: boolean
+  executable_heap: boolean
 }
 
 export type ArtifactKind = 'memory' | 'virtual_file' | 'remote_memory' | 'configuration'

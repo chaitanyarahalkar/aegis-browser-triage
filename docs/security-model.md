@@ -73,6 +73,8 @@ Dynamic analysis:
   events but never target or create a host process
 - Runtime artifact capture is limited to 128 unique artifacts, 4 MiB per artifact,
   and 32 MiB total retained bytes; ordinary UI reads are capped at 64 KiB
+- Payload lineage is limited to 256 distinct generations. A generation is metadata
+  linked to an already bounded artifact and never adds another raw-byte copy
 - Artifact bytes remain in the dynamic worker for the session. Reports contain only
   bounded metadata, and raw-byte export requires a per-artifact confirmation
 - Unsupported instructions and invalid reads, writes, or execution become

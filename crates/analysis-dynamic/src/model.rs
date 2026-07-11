@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 4;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 5;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -210,6 +210,8 @@ pub struct DynamicReport {
     pub persistence: Vec<PersistenceEvent>,
     pub artifacts: Vec<ArtifactSummary>,
     pub artifact_stats: ArtifactStats,
+    pub payload_generations: Vec<PayloadGeneration>,
+    pub generation_stats: GenerationStats,
     pub timeline: Vec<TimelineEvent>,
     pub coverage: ExecutionCoverage,
     pub findings: Vec<DynamicFinding>,
@@ -275,6 +277,31 @@ pub struct ArtifactIndicator {
 pub struct ArtifactStats {
     pub count: usize,
     pub retained_bytes: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PayloadGeneration {
+    pub id: String,
+    pub sequence: u64,
+    pub parent_id: Option<String>,
+    pub artifact_id: String,
+    pub region_base: u32,
+    pub size: u64,
+    pub capture_instruction: u64,
+    pub virtual_time_ms: u64,
+    pub trigger: String,
+    pub permissions: String,
+    pub executed: bool,
+    pub entry_point_overwrite: bool,
+    pub executable_heap: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationStats {
+    pub count: usize,
+    pub chains: usize,
+    pub executed_generations: usize,
     pub truncated: bool,
 }
 

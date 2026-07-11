@@ -4,6 +4,7 @@ mod cpu;
 mod engine;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixture;
+mod generation;
 mod loader;
 mod memory;
 mod model;
@@ -120,7 +121,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 4);
+        assert_eq!(report.schema_version, 5);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -216,6 +217,28 @@ mod tests {
                 .artifacts
                 .iter()
                 .any(|artifact| artifact.kind == ArtifactKind::VirtualFile)
+        );
+        assert!(analysis.report.payload_generations.len() >= 2);
+        assert!(
+            analysis
+                .report
+                .payload_generations
+                .iter()
+                .any(|generation| generation.parent_id.is_some())
+        );
+        assert!(
+            analysis
+                .report
+                .payload_generations
+                .iter()
+                .any(|generation| generation.executed && generation.executable_heap)
+        );
+        assert!(
+            analysis
+                .report
+                .findings
+                .iter()
+                .any(|finding| finding.id == "payload-generations")
         );
         for artifact in &analysis.report.artifacts {
             assert!(analysis.artifact_bytes(&artifact.id).is_some());

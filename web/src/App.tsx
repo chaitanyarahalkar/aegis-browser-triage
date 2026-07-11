@@ -581,7 +581,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'profiles'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
@@ -638,6 +638,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
         <button className={view === 'instructions' ? 'active' : ''} type="button" onClick={() => setView('instructions')}>Instructions ({report.instructions.length})</button>
         <button className={view === 'coverage' ? 'active' : ''} type="button" onClick={() => setView('coverage')}>Coverage</button>
         <button className={view === 'artifacts' ? 'active' : ''} type="button" onClick={() => setView('artifacts')}>Artifacts ({report.artifacts.length})</button>
+        <button className={view === 'unpacking' ? 'active' : ''} type="button" onClick={() => setView('unpacking')}>Unpacking ({report.payload_generations.length})</button>
         {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
@@ -646,9 +647,17 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
       {view === 'instructions' && <InstructionView report={report} />}
       {view === 'coverage' && <CoverageView report={report} />}
       {view === 'artifacts' && <ArtifactsView report={report} client={client} yara={artifactYara} status={artifactYaraStatus} error={artifactYaraError} onScan={onScanArtifacts} onTimeline={(sequence) => { setTimelineTarget(sequence); setView('timeline') }} />}
+      {view === 'unpacking' && <UnpackingView report={report} yara={artifactYara} status={artifactYaraStatus} onScan={onScanArtifacts} />}
       {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
+}
+
+function UnpackingView({ report, yara, status, onScan }: { report: DynamicReport; yara: ArtifactYaraResult[]; status: 'idle' | 'running' | 'done' | 'error'; onScan: () => void }) {
+  if (!report.payload_generations.length) return <EmptyState title="No payload generations observed" text="No dirty memory region became executable, overwrote the entry-point region, or produced a distinct executed version." />
+  const artifactById = new Map(report.artifacts.map((artifact) => [artifact.id, artifact]))
+  const yaraById = new Map(yara.map((result) => [result.artifact_id, result]))
+  return <div className="generation-layout"><div className="artifact-actions"><div><strong>{report.generation_stats.count} generations across {report.generation_stats.chains} chains</strong><span>{report.generation_stats.executed_generations} executed · lineage retained by region and hash</span></div><button className="button primary compact" type="button" disabled={status === 'running'} onClick={onScan}>{status === 'running' ? 'Scanning generations…' : 'Scan generations with YARA'}</button></div><Section title="Payload lineage" description="Each row is a distinct bounded memory version; parent links connect successive versions of the same region."><Table><thead><tr><th>Generation</th><th>Parent</th><th>Region</th><th>Trigger</th><th>Flags</th><th>SHA-256</th><th>YARA</th></tr></thead><tbody>{report.payload_generations.map((generation) => { const artifact = artifactById.get(generation.artifact_id); const result = yaraById.get(generation.artifact_id); return <tr key={generation.id}><td><code className="strong-code">#{generation.sequence + 1}</code></td><td>{generation.parent_id ? <code>{generation.parent_id.split('-').slice(0, 2).join('-')}</code> : 'Root'}</td><td><code>{formatOffset(generation.region_base)}</code><small>{formatBytes(generation.size)} · {generation.permissions}</small></td><td>{generation.trigger}<small>instruction {generation.capture_instruction.toLocaleString()}</small></td><td><div className="generation-flags">{generation.executed && <span className="tag danger">executed</span>}{generation.executable_heap && <span className="tag">heap</span>}{generation.entry_point_overwrite && <span className="tag danger">entry overwrite</span>}</div></td><td><code>{artifact?.sha256.slice(0, 16) ?? generation.artifact_id.slice(0, 16)}…</code></td><td>{result?.error ? 'Error' : result ? result.report?.matches.map((match) => match.identifier).join(', ') || 'No match' : 'Not scanned'}</td></tr> })}</tbody></Table></Section></div>
 }
 
 function ProfilePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {

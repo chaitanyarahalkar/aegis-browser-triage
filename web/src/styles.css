@@ -145,6 +145,10 @@ code { font-family: var(--mono); }
 .injection-chain code, .injection-chain small { overflow: hidden; text-overflow: ellipsis; font-size: 9px; white-space: nowrap; }
 .injection-chain small { color: var(--muted); }
 .artifact-layout { display: grid; gap: 16px; }
+.generation-layout { display: grid; gap: 16px; }
+.generation-layout .artifact-actions > div { display: grid; gap: 3px; padding: 12px; }
+.generation-layout .artifact-actions span, .generation-layout td small { color: var(--muted); display: block; font-size: 12px; margin-top: 3px; }
+.generation-flags { display: flex; flex-wrap: wrap; gap: 5px; }
 .profile-picker { display: grid; gap: 6px; min-width: 224px; }
 .profile-picker span { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .profile-picker select { background: white; border: 1px solid var(--border); border-radius: 7px; color: var(--ink); min-height: 40px; padding: 0 11px; }

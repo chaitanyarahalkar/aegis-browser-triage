@@ -36,6 +36,7 @@ struct Region {
     permissions: Permissions,
     name: String,
     dirty: bool,
+    write_ranges: Vec<(u32, u32)>,
 }
 
 impl Region {
@@ -85,6 +86,7 @@ impl Memory {
             permissions,
             name: name.into(),
             dirty: false,
+            write_ranges: Vec::new(),
         });
         self.regions.sort_by_key(|region| region.start);
         Ok(())
@@ -133,6 +135,15 @@ impl Memory {
         region.data[offset..offset + data.len()].copy_from_slice(data);
         if !force && !data.is_empty() {
             region.dirty = true;
+            let end = address.saturating_add(data.len() as u32);
+            if let Some((last_start, last_end)) = region.write_ranges.last_mut()
+                && address <= *last_end
+            {
+                *last_start = (*last_start).min(address);
+                *last_end = (*last_end).max(end);
+            } else if region.write_ranges.len() < 256 {
+                region.write_ranges.push((address, end));
+            }
         }
         Ok(())
     }
@@ -226,6 +237,15 @@ impl Memory {
                 dirty: region.dirty,
                 data: &region.data,
             })
+    }
+
+    pub fn was_written(&self, address: u32) -> bool {
+        self.regions.iter().any(|region| {
+            region
+                .write_ranges
+                .iter()
+                .any(|(start, end)| address >= *start && address < *end)
+        })
     }
 
     pub fn dirty_regions(&self) -> impl Iterator<Item = MemoryRegionView<'_>> {

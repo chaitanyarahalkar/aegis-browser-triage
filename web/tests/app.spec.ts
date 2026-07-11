@@ -51,7 +51,7 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v4', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v5', { exact: true })).toBeVisible()
 })
 
 test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
@@ -149,7 +149,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(4)
+  expect(json.dynamic.schema_version).toBe(5)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
@@ -175,9 +175,14 @@ test('captures runtime artifacts, scans them with YARA, and gates raw export', a
   await page.getByRole('button', { name: 'Use runtime artifact demo' }).click()
   await expect(page.getByText('aegis-safe-runtime-artifact-pe32.exe')).toBeVisible()
   await runDynamic(page)
+  await page.getByRole('button', { name: /^Unpacking \([2-9]/ }).click()
+  await expect(page.getByRole('heading', { name: 'Payload lineage' })).toBeVisible()
+  await expect(page.getByText('executed', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('Root', { exact: true }).first()).toBeVisible()
+  await page.getByRole('button', { name: 'Scan generations with YARA' }).click()
+  await expect(page.getByText('Aegis_Safe_Runtime_Artifact', { exact: true }).first()).toBeVisible()
   await page.getByRole('button', { name: /^Artifacts/ }).click()
   await expect(page.locator('.artifact-strings')).toContainText('AEGIS_SAFE_RUNTIME_ARTIFACT')
-  await page.getByRole('button', { name: 'Scan artifacts with YARA' }).click()
   await expect(page.getByText('Aegis_Safe_Runtime_Artifact', { exact: true }).first()).toBeVisible()
 
   await page.getByRole('button', { name: 'Export raw bytes' }).click()
@@ -195,6 +200,8 @@ test('captures runtime artifacts, scans them with YARA, and gates raw export', a
   const reportDownload = await reportPromise
   const json = JSON.parse(readFileSync(await reportDownload.path()!, 'utf8'))
   expect(json.dynamic.artifacts.length).toBeGreaterThanOrEqual(2)
+  expect(json.dynamic.payload_generations.length).toBeGreaterThanOrEqual(2)
+  expect(json.dynamic.payload_generations.some((generation: { parent_id: string | null; executed: boolean }) => generation.parent_id && generation.executed)).toBe(true)
   expect(json.dynamic.artifact_yara.some((result: { report?: { matches: Array<{ identifier: string }> } }) => result.report?.matches.some((match) => match.identifier === 'Aegis_Safe_Runtime_Artifact'))).toBe(true)
   expect(json.dynamic.artifacts.every((artifact: Record<string, unknown>) => !('bytes' in artifact) && !('data' in artifact))).toBe(true)
 })

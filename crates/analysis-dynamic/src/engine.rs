@@ -6,6 +6,7 @@ use crate::{
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
     cpu::Cpu,
+    generation::{GenerationObservation, GenerationTracker},
     loader::{self, ApiImport, STACK_TOP},
     memory::{Memory, Permissions},
     windows::{HandleResource, VirtualWindows},
@@ -109,6 +110,7 @@ pub(crate) fn run(
         entry_point: loaded.entry_point,
         tls_callbacks: loaded.tls_callbacks.into(),
         artifacts: ArtifactStore::default(),
+        generations: GenerationTracker::default(),
         environment,
     };
     machine.start_execution()?;
@@ -121,6 +123,7 @@ pub(crate) fn run(
         .clone()
         .unwrap_or(Termination::InstructionLimit);
     let (artifact_summaries, artifact_stats, artifact_blobs) = machine.artifacts.finish();
+    let (payload_generations, generation_stats) = machine.generations.finish();
     for artifact in &artifact_summaries {
         if artifact.detected_format != "unknown"
             || artifact
@@ -136,6 +139,30 @@ pub(crate) fn run(
                 evidence: vec![format!("{} · {} · {} bytes", artifact.name, artifact.detected_format, artifact.captured_size)],
             });
         }
+    }
+    if generation_stats.count > 0 {
+        let evidence = payload_generations
+            .iter()
+            .map(|generation| {
+                format!(
+                    "{} · 0x{:08x} · {}{}{}",
+                    generation.id,
+                    generation.region_base,
+                    generation.trigger,
+                    if generation.executed {
+                        " · executed"
+                    } else {
+                        ""
+                    },
+                    if generation.entry_point_overwrite {
+                        " · entry point overwritten"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect();
+        findings.push(DynamicFinding { id: "payload-generations".into(), title: "Runtime payload generations observed".into(), severity: DynamicSeverity::High, rationale: "Written memory produced one or more distinct executable payload versions during emulation.".into(), evidence });
     }
     let report = DynamicReport {
         schema_version: crate::DYNAMIC_SCHEMA_VERSION,
@@ -157,6 +184,8 @@ pub(crate) fn run(
         persistence: machine.persistence,
         artifacts: artifact_summaries,
         artifact_stats,
+        payload_generations,
+        generation_stats,
         timeline: machine.timeline,
         coverage: ExecutionCoverage {
             unique_instruction_addresses: machine.unique_instruction_addresses.len(),
@@ -206,6 +235,7 @@ struct Machine {
     entry_point: u32,
     tls_callbacks: VecDeque<u32>,
     artifacts: ArtifactStore,
+    generations: GenerationTracker,
     environment: crate::EnvironmentProfile,
 }
 
@@ -315,55 +345,54 @@ impl Machine {
         let permissions = region.permissions.display();
         let bytes = region.data[..region.data.len().min(MAX_ARTIFACT_BYTES)].to_vec();
         let origin = self.artifact_origin(api, trigger, Some(start), None);
-        self.artifacts.capture(
+        let kind = if region.permissions.execute {
+            ArtifactKind::Memory
+        } else {
+            ArtifactKind::Configuration
+        };
+        let entry_point_overwrite = self.memory.was_written(self.entry_point)
+            && self.entry_point >= start
+            && self.entry_point < start.saturating_add(region.data.len() as u32);
+        let executed = trigger == "dynamic_execution";
+        let executable_heap = start >= HEAP_BASE && region.permissions.execute;
+        let size = region.data.len() as u64;
+        if let Some(artifact_id) = self.artifacts.capture(
             ArtifactCapture {
-                kind: ArtifactKind::Memory,
+                kind,
                 name,
                 trigger,
                 address: Some(start),
                 path: None,
-                permissions: Some(permissions),
+                permissions: Some(permissions.clone()),
                 force,
             },
             &bytes,
             origin,
-        );
+        ) && (permissions.contains('x') || entry_point_overwrite)
+        {
+            self.generations.observe(GenerationObservation {
+                artifact_id,
+                region_base: start,
+                size,
+                instruction: self.instruction_count,
+                virtual_time_ms: self.virtual_time_ms,
+                trigger,
+                permissions,
+                executed,
+                entry_point_overwrite,
+                executable_heap,
+            });
+        }
     }
 
     fn capture_final_artifacts(&mut self) {
         let memory: Vec<_> = self
             .memory
             .dirty_regions()
-            .map(|region| {
-                (
-                    region.start,
-                    region.name.to_owned(),
-                    region.permissions.display(),
-                    region.data[..region.data.len().min(MAX_ARTIFACT_BYTES)].to_vec(),
-                )
-            })
+            .map(|region| region.start)
             .collect();
-        for (address, name, permissions, bytes) in memory {
-            let origin =
-                self.artifact_origin("finalize", "final_dirty_region", Some(address), None);
-            let kind = if permissions.contains('x') {
-                ArtifactKind::Memory
-            } else {
-                ArtifactKind::Configuration
-            };
-            self.artifacts.capture(
-                ArtifactCapture {
-                    kind,
-                    name,
-                    trigger: "final_dirty_region",
-                    address: Some(address),
-                    path: None,
-                    permissions: Some(permissions),
-                    force: false,
-                },
-                &bytes,
-                origin,
-            );
+        for address in memory {
+            self.capture_memory_region(address, "final_dirty_region", "finalize", false);
         }
         let files: Vec<_> = self
             .windows
@@ -2747,6 +2776,7 @@ impl Machine {
         address: u32,
         operation: &str,
     ) -> Result<(u32, String, Vec<String>), DynamicError> {
+        self.capture_memory_region(address, "memory_release", operation, false);
         let released = self.memory.unmap(address);
         if !released {
             self.windows.set_last_error(87);
@@ -3176,6 +3206,7 @@ mod tests {
             entry_point: 0x1000,
             tls_callbacks: VecDeque::new(),
             artifacts: ArtifactStore::default(),
+            generations: GenerationTracker::default(),
             environment: crate::EnvironmentProfile::default(),
         }
     }
@@ -3365,5 +3396,32 @@ mod tests {
                 .iter()
                 .all(|event| event.synthetic_result.contains("offline"))
         );
+    }
+
+    #[test]
+    fn detects_entry_point_overwrite_as_a_payload_generation() {
+        let mut machine = machine_with_code(&[0x90, 0xf4]);
+        machine.entry_point = 0x1000;
+        machine
+            .memory
+            .set_permissions(0x1000, 2, Permissions::READ_WRITE)
+            .unwrap();
+        machine.memory.write(0x1000, &[0x90, 0xf4]).unwrap();
+        machine
+            .memory
+            .set_permissions(
+                0x1000,
+                2,
+                Permissions {
+                    read: true,
+                    write: false,
+                    execute: true,
+                },
+            )
+            .unwrap();
+        machine.capture_memory_region(0x1000, "executable_transition", "VirtualProtect", true);
+        let (generations, _) = machine.generations.finish();
+        assert_eq!(generations.len(), 1);
+        assert!(generations[0].entry_point_overwrite);
     }
 }
