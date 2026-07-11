@@ -27,13 +27,13 @@ async function runDynamic(page: import('@playwright/test').Page) {
 async function runYara(page: import('@playwright/test').Page) {
   await page.getByRole('tab', { name: /^YARA/ }).click()
   await page.getByRole('button', { name: 'Compile & scan' }).click()
-  await expect(page.getByText('Aegis_Safe_Demo', { exact: true })).toBeVisible()
+  await expect(page.getByText('NOPE_Safe_Demo', { exact: true })).toBeVisible()
 }
 
 test('runs the safe PE through static and dynamic Rust workers', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Analyze binaries locally.' })).toBeVisible()
-  await expect(page.getByText('No uploads')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Look before you launch.' })).toBeVisible()
+  await expect(page.getByText('No uploads', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Use safe PE demo' }).click()
 
   await expect(page.getByText('aegis-safe-dynamic-pe32.exe')).toBeVisible()
@@ -290,13 +290,13 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   await loadSafeDemo(page)
   await runDynamic(page)
   await runYara(page)
-  await expect(page.getByText('Identifies the first-party Aegis safe test fixture', { exact: true })).toBeVisible()
+  await expect(page.getByText('Identifies the first-party NOPE safe test fixture', { exact: true })).toBeVisible()
   await page.locator('.offset-link').first().click()
   await expect(page.getByRole('heading', { name: 'Hex view' })).toBeVisible()
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Export report' }).click()
   const download = await downloadPromise
-  expect(download.suggestedFilename()).toBe('aegis-safe-dynamic-pe32.exe.aegis-report.json')
+  expect(download.suggestedFilename()).toBe('aegis-safe-dynamic-pe32.exe.nope-report.json')
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
@@ -304,7 +304,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
-  expect(json.yara.matches[0].identifier).toBe('Aegis_Safe_Demo')
+  expect(json.yara.matches[0].identifier).toBe('NOPE_Safe_Demo')
   expect(JSON.stringify(json.yara)).not.toContain('powershell.exe -NoProfile https://example.test 10.20.30.40')
 })
 
@@ -331,10 +331,10 @@ test('captures runtime artifacts, scans them with YARA, and gates raw export', a
   await expect(page.getByText('executed', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('Root', { exact: true }).first()).toBeVisible()
   await page.getByRole('button', { name: 'Scan generations with YARA' }).click()
-  await expect(page.getByText('Aegis_Safe_Runtime_Artifact', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('NOPE_Safe_Runtime_Artifact', { exact: true }).first()).toBeVisible()
   await page.getByRole('button', { name: /^Artifacts/ }).click()
   await expect(page.locator('.artifact-strings')).toContainText('AEGIS_SAFE_RUNTIME_ARTIFACT')
-  await expect(page.getByText('Aegis_Safe_Runtime_Artifact', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('NOPE_Safe_Runtime_Artifact', { exact: true }).first()).toBeVisible()
 
   await page.getByRole('button', { name: 'Export raw bytes' }).click()
   const dialog = page.getByRole('dialog', { name: 'Export potentially malicious bytes?' })
@@ -353,7 +353,7 @@ test('captures runtime artifacts, scans them with YARA, and gates raw export', a
   expect(json.dynamic.artifacts.length).toBeGreaterThanOrEqual(2)
   expect(json.dynamic.payload_generations.length).toBeGreaterThanOrEqual(2)
   expect(json.dynamic.payload_generations.some((generation: { parent_id: string | null; executed: boolean }) => generation.parent_id && generation.executed)).toBe(true)
-  expect(json.dynamic.artifact_yara.some((result: { report?: { matches: Array<{ identifier: string }> } }) => result.report?.matches.some((match) => match.identifier === 'Aegis_Safe_Runtime_Artifact'))).toBe(true)
+  expect(json.dynamic.artifact_yara.some((result: { report?: { matches: Array<{ identifier: string }> } }) => result.report?.matches.some((match) => match.identifier === 'NOPE_Safe_Runtime_Artifact'))).toBe(true)
   expect(json.dynamic.artifacts.every((artifact: Record<string, unknown>) => !('bytes' in artifact) && !('data' in artifact))).toBe(true)
 })
 
@@ -436,7 +436,7 @@ test('follows scripted network redirects and captures a download artifact', asyn
   await page.getByRole('button', { name: /^Artifacts/ }).click()
   await expect(page.getByRole('cell', { name: 'network_download' })).toBeVisible()
   await page.getByRole('button', { name: 'Scan artifacts with YARA' }).click()
-  await expect(page.getByText('Aegis_Safe_Network_Download', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('NOPE_Safe_Network_Download', { exact: true }).first()).toBeVisible()
 })
 
 test('does not contact third parties or persist sample data', async ({ page }) => {

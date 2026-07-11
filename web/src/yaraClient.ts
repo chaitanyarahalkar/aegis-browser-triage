@@ -39,7 +39,7 @@ export class YaraClient {
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
-    const worker = new Worker(new URL('./yara.worker.ts', import.meta.url), { type: 'module', name: 'aegis-yara-analyzer' })
+    const worker = new Worker(new URL('./yara.worker.ts', import.meta.url), { type: 'module', name: 'nope-yara-analyzer' })
     worker.onmessage = (event: MessageEvent<YaraWorkerResponse>) => this.handle(event.data)
     worker.onerror = () => this.failAndReset(new Error('The isolated YARA worker crashed'))
     worker.onmessageerror = () => this.failAndReset(new Error('The YARA worker returned an unreadable response'))

@@ -59,7 +59,7 @@ impl CompiledYaraRules {
             compiler.ban_module(
                 module,
                 "module disabled in browser build",
-                format!("the `{module}` module is not enabled in Aegis's browser-safe YARA build"),
+                format!("the `{module}` module is not enabled in NOPE's browser-safe YARA build"),
             );
         }
 

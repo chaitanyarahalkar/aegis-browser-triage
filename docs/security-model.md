@@ -1,8 +1,8 @@
-# Aegis security model
+# NOPE security model
 
 ## Security objective
 
-Aegis lets an analyst inspect an untrusted binary without transmitting it or
+NOPE lets an analyst inspect an untrusted binary without transmitting it or
 letting it execute as host code. Static analysis treats every sample as bytes.
 Dynamic analysis interprets guest x86 instructions and models a small Windows
 environment; it never passes guest code to the browser's WebAssembly engine or
@@ -12,7 +12,7 @@ Uploaded WebAssembly is parsed with `wasmparser` and is never instantiated.
 
 ## Trust boundaries
 
-The trusted computing base consists of the current browser, the Aegis
+The trusted computing base consists of the current browser, the NOPE
 JavaScript and WebAssembly bundles, Rust dependencies recorded in the lockfile,
 and the static server delivering those files. The uploaded sample and every
 derived string, symbol, address, count, instruction, and API argument are
@@ -161,7 +161,7 @@ dynamic workflows create no third-party requests.
 
 ## Guarantees and non-guarantees
 
-Aegis prevents application-level native execution and bounds ordinary parser
+NOPE prevents application-level native execution and bounds ordinary parser
 and interpreter resource use. It cannot make a browser, WebAssembly runtime,
 compiler, or dependency invulnerable. Use a fully updated browser and an
 isolated profile or machine for highly sensitive samples.

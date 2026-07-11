@@ -1,6 +1,8 @@
-# Aegis
+# NOPE.exe
 
-Aegis is a local-only binary triage workbench that runs in the browser. A Rust
+**Look before you launch.**
+
+NOPE is a local-only binary triage workbench that runs in the browser. A Rust
 engine performs static inspection of PE, ELF, Mach-O, and WebAssembly files. A
 second Rust engine can emulate 32-bit x86 and 64-bit x86-64 Windows PE samples inside a dedicated
 Web Worker. A third, lazy-loaded Rust engine compiles and scans YARA rules with
@@ -135,3 +137,6 @@ automatic persistence. See the security model before analyzing hostile samples.
 Licensed under MIT.
 
 Live app: <https://chaitanyarahalkar.github.io/aegis-browser-triage/>
+
+The repository and legacy fixture identifiers retain the original Aegis naming
+for link and report compatibility during the rebrand.

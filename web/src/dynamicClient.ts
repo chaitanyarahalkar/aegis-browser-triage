@@ -80,7 +80,7 @@ export class DynamicAnalysisClient {
     if (this.worker) return this.worker
     const worker = new Worker(new URL('./dynamic.worker.ts', import.meta.url), {
       type: 'module',
-      name: 'aegis-dynamic-analyzer',
+      name: 'nope-dynamic-analyzer',
     })
     worker.onmessage = (event: MessageEvent<DynamicWorkerResponse>) => this.handleMessage(event.data)
     worker.onerror = () => this.failAndReset(new Error('The dynamic analysis worker crashed'))

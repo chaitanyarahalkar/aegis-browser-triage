@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnalysisClient } from './analysisClient'
 import { DynamicAnalysisClient } from './dynamicClient'
 import { YaraClient } from './yaraClient'
-import starterRules from './rules/aegis-starter.yar?raw'
+import starterRules from './rules/nope-starter.yar?raw'
 import { formatBytes, formatLabel, formatMetadata, formatOffset, severityCounts } from './reportUtils'
 import type {
   AnalysisReport,
@@ -47,6 +47,16 @@ const dynamicProgressLabels: Record<DynamicProgressStage, string> = {
   finalizing: 'Preparing behavior report',
 }
 
+function LogoMark({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 36 36" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="31" height="31" rx="8" />
+      <path className="logo-play" d="M14 11.5 25 18l-11 6.5z" />
+      <path className="logo-slash" d="m9.5 27 17-18" />
+    </svg>
+  )
+}
+
 export default function App() {
   const staticClient = useMemo(() => new AnalysisClient(), [])
   const dynamicClient = useMemo(() => new DynamicAnalysisClient(), [])
@@ -67,7 +77,7 @@ export default function App() {
   const [dynamicProfileId, setDynamicProfileId] = useState('balanced')
   const [dynamicError, setDynamicError] = useState<string | null>(null)
   const [yaraSource, setYaraSource] = useState(starterRules)
-  const [yaraSourceName, setYaraSourceName] = useState('aegis-starter.yar')
+  const [yaraSourceName, setYaraSourceName] = useState('nope-starter.yar')
   const [yaraStatus, setYaraStatus] = useState<YaraStatus>('idle')
   const [yaraStage, setYaraStage] = useState<YaraProgressStage>('loading-engine')
   const [yaraSummary, setYaraSummary] = useState<YaraCompileSummary | null>(null)
@@ -388,7 +398,7 @@ export default function App() {
     const anchor = document.createElement('a')
     const baseName = report.sample.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'sample'
     anchor.href = url
-    anchor.download = `${baseName}.aegis-report.json`
+    anchor.download = `${baseName}.nope-report.json`
     anchor.click()
     window.setTimeout(() => URL.revokeObjectURL(url), 0)
   }
@@ -398,13 +408,13 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <a className="wordmark" href="#top" aria-label="Aegis home">
-          <span>A</span>
-          <strong>Aegis</strong>
+        <a className="wordmark" href="#top" aria-label="NOPE home">
+          <LogoMark className="brand-mark" />
+          <strong>NOPE<span>.exe</span></strong>
         </a>
         <div className="header-meta">
           <span className="quiet-status"><i /> Local only</span>
-          <span>Static + dynamic analysis</span>
+          <span>No uploads. No host execution.</span>
         </div>
       </header>
 
@@ -412,9 +422,9 @@ export default function App() {
         {!report && !busy && (
           <section className="intro">
             <div className="intro-copy">
-              <p className="kicker">Browser-native binary analysis</p>
-              <h1>Analyze binaries locally.</h1>
-              <p>Static inspection and bounded x86/x64 emulation. Files stay in this browser and are never executed by the host.</p>
+              <p className="kicker">Browser-native binary workbench</p>
+              <h1>Look before<br />you launch.</h1>
+              <p>Disassemble, emulate, and interrogate suspicious binaries—entirely in your browser. Your files stay local and never execute on the host.</p>
             </div>
             <UploadPanel
               dragging={dragging}
@@ -493,7 +503,7 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        <span>Aegis 0.3</span>
+        <span>NOPE.exe 0.3</span>
         <span>Static and emulated behavior are evidence, not a verdict.</span>
       </footer>
     </div>
@@ -531,8 +541,8 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
       }}
     >
       <div className="upload-copy">
-        <strong>Drop a binary here</strong>
-        <span>PE, ELF, Mach-O, or WebAssembly</span>
+        <strong>Drop the suspicious file.</strong>
+        <span>PE, ELF, Mach-O, or WebAssembly · 128 MiB maximum</span>
       </div>
       <div className="button-row">
         <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
@@ -873,7 +883,7 @@ function ProfileComparison({ reports, onSelect }: { reports: DynamicReport[]; on
   const baseline = reports.find((report) => report.profile.environment.id === baselineId) ?? reports[0]
   const candidate = reports.find((report) => report.profile.environment.id === candidateId) ?? reports[1] ?? baseline
   const comparison = compareDynamicRuns(baseline, candidate)
-  const exportComparison = () => { const url = URL.createObjectURL(new Blob([JSON.stringify(comparison, null, 2)], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${baseline.profile.environment.id}-vs-${candidate.profile.environment.id}.aegis-run-diff.json`; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 0) }
+  const exportComparison = () => { const url = URL.createObjectURL(new Blob([JSON.stringify(comparison, null, 2)], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${baseline.profile.environment.id}-vs-${candidate.profile.environment.id}.nope-run-diff.json`; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 0) }
   return <div className="generation-layout"><Section title="Environment profile comparison" description="The same sample was executed independently under deterministic synthetic environments."><Table><thead><tr><th>Profile</th><th>Environment</th><th>Termination</th><th>Instructions</th><th>Behavior</th><th>Artifacts</th><th>First snapshot delta</th></tr></thead><tbody>{reports.map((report) => { const delta = compareDynamicRuns(reports[0], report); return <tr key={report.profile.environment.id}><td><button className="offset-link" type="button" onClick={() => onSelect(report.profile.environment.id)}>{report.profile.environment.label}</button></td><td><small>{report.profile.environment.windows_version}<br />{report.profile.environment.cpu_count} CPU · {formatBytes(report.profile.environment.memory_mb * 1024 * 1024)} · {report.profile.environment.network_mode}{report.profile.environment.debugger_present ? ' · debugger' : ''}</small></td><td>{terminationLabel(report.termination)}</td><td>{report.instruction_count.toLocaleString()}</td><td>{dynamicBehaviorCount(report)}</td><td>{report.artifacts.length}</td><td><span className={`tag ${delta.different ? 'danger' : ''}`}>{report === reports[0] ? 'Baseline' : delta.first_divergence?.trigger ?? (delta.different ? 'Report delta' : 'Same path')}</span></td></tr> })}</tbody></Table></Section><Section title="Detailed run diff" description="Compare any two deterministic runs and export a metadata-only diff."><div className="artifact-actions"><div className="button-row"><label className="profile-picker"><span>Baseline</span><select aria-label="Comparison baseline" value={baselineId} onChange={(event) => setBaselineId(event.target.value)}>{reports.map((report) => <option key={report.profile.environment.id} value={report.profile.environment.id}>{report.profile.environment.label}</option>)}</select></label><label className="profile-picker"><span>Candidate</span><select aria-label="Comparison candidate" value={candidateId} onChange={(event) => setCandidateId(event.target.value)}>{reports.map((report) => <option key={report.profile.environment.id} value={report.profile.environment.id}>{report.profile.environment.label}</option>)}</select></label></div><button className="button secondary compact" type="button" onClick={exportComparison}>Export run diff JSON</button></div><div className="stats-grid"><Stat label="First divergence" value={comparison.first_divergence?.trigger ?? 'None'} detail={comparison.first_divergence ? `snapshot ${comparison.first_divergence.sequence + 1}` : 'State hashes match'} /><Stat label="Instruction delta" value={comparison.deltas.instructions.toLocaleString()} detail={`${candidate.instruction_count.toLocaleString()} candidate`} /><Stat label="Behavior delta" value={comparison.deltas.behavior.toLocaleString()} detail={`${comparison.deltas.provenance_flows} provenance flows`} /></div><Table><thead><tr><th>Set</th><th>Added</th><th>Removed</th></tr></thead><tbody><tr><td>APIs</td><td><code>{comparison.api_changes.added.join(', ') || 'None'}</code></td><td><code>{comparison.api_changes.removed.join(', ') || 'None'}</code></td></tr><tr><td>Findings</td><td><code>{comparison.finding_changes.added.join(', ') || 'None'}</code></td><td><code>{comparison.finding_changes.removed.join(', ') || 'None'}</code></td></tr></tbody></Table></Section></div>
 }
 
@@ -932,7 +942,7 @@ function ArtifactsView({ report, client, yara, status, error, onScan, onTimeline
     <div className="artifact-grid"><Section title="Captured artifacts" description={`${report.artifact_stats.count} unique artifacts · ${formatBytes(report.artifact_stats.retained_bytes)} retained in the worker.`}><Table><thead><tr><th>Name</th><th>Kind</th><th>Format</th><th>Size</th><th>Entropy</th><th>YARA</th></tr></thead><tbody>{artifacts.map((artifact) => { const result = yaraFor(artifact.id); return <tr className={selected?.id === artifact.id ? 'selected-row' : ''} key={artifact.id} onClick={() => { setSelectedId(artifact.id); setOffset(0) }}><td><code className="strong-code">{artifact.name}</code></td><td><span className="tag">{artifact.kind}</span></td><td>{artifact.detected_format}</td><td>{formatBytes(artifact.captured_size)}</td><td>{artifact.entropy.toFixed(2)}</td><td>{result?.error ? 'Error' : result ? `${result.report?.matches.length ?? 0} matches` : 'Not scanned'}</td></tr> })}</tbody></Table></Section>
       {selected && <Section title={selected.name} description={`${selected.sha256.slice(0, 20)}… · ${selected.trigger}`}><div className="artifact-detail"><dl className="limits-list"><div><dt>Kind</dt><dd>{selected.kind}</dd></div><div><dt>Format</dt><dd>{selected.detected_format}</dd></div><div><dt>Permissions</dt><dd>{selected.permissions ?? '—'}</dd></div><div><dt>Captured</dt><dd>{formatBytes(selected.captured_size)}</dd></div></dl><div className="button-row"><button className="button secondary compact" type="button" onClick={() => setExportTarget(selected.id)}>Export raw bytes</button>{selected.origins[0]?.timeline_sequence != null && <button className="button secondary compact" type="button" onClick={() => onTimeline(selected.origins[0].timeline_sequence!)}>View timeline origin</button>}</div>{readError ? <div className="notice warning-notice">{readError}</div> : <ArtifactHex bytes={bytes} offset={offset} total={selected.captured_size} onOffset={setOffset} />}<h3>Strings and indicators</h3><div className="artifact-strings">{selected.indicators.map((indicator) => <code key={`${indicator.offset}-${indicator.value}`}>{indicator.kind}: {indicator.value}</code>)}{selected.strings.slice(0, 24).map((item) => <code key={`${item.offset}-${item.value}`}>{formatOffset(item.offset)} {item.value}</code>)}</div>{yaraFor(selected.id)?.report && <div className="notice safe-notice"><strong>{yaraFor(selected.id)!.report!.matches.length} YARA rule matches.</strong><span>{yaraFor(selected.id)!.report!.matches.map((match) => match.identifier).join(', ') || 'No rules matched.'}</span></div>}</div></Section>}
     </div>
-    {exportTarget && selected && <div className="modal-backdrop" role="presentation"><div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="artifact-export-title"><h2 id="artifact-export-title">Export potentially malicious bytes?</h2><p><strong>{selected.name}</strong> may contain executable or harmful content. Aegis will download {formatBytes(selected.captured_size)} with SHA-256 <code>{selected.sha256}</code>.</p><div className="button-row"><button className="button secondary" type="button" onClick={() => setExportTarget(null)}>Cancel</button><button className="button primary" type="button" onClick={() => void exportBytes()}>Export raw bytes</button></div></div></div>}
+    {exportTarget && selected && <div className="modal-backdrop" role="presentation"><div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="artifact-export-title"><h2 id="artifact-export-title">Export potentially malicious bytes?</h2><p><strong>{selected.name}</strong> may contain executable or harmful content. NOPE will download {formatBytes(selected.captured_size)} with SHA-256 <code>{selected.sha256}</code>.</p><div className="button-row"><button className="button secondary" type="button" onClick={() => setExportTarget(null)}>Cancel</button><button className="button primary" type="button" onClick={() => void exportBytes()}>Export raw bytes</button></div></div></div>}
   </div>
 }
 
@@ -1141,7 +1151,7 @@ function YaraView({ source, sourceName, status, stage, summary, report, error, o
   }
   return <div className="yara-layout">
     <Section title="Rule editor" description="Rules remain in memory and are never uploaded or saved automatically.">
-      <div className="yara-toolbar"><strong>{sourceName}</strong><span>{formatBytes(new Blob([source]).size)} / 1 MiB</span><div><button className="button secondary compact" type="button" onClick={() => importRef.current?.click()}>Import</button><button className="button secondary compact" type="button" onClick={exportRules}>Export rules</button><button className="button secondary compact" type="button" onClick={() => onSource(starterRules, 'aegis-starter.yar')}>Reset starter pack</button></div></div>
+      <div className="yara-toolbar"><strong>{sourceName}</strong><span>{formatBytes(new Blob([source]).size)} / 1 MiB</span><div><button className="button secondary compact" type="button" onClick={() => importRef.current?.click()}>Import</button><button className="button secondary compact" type="button" onClick={exportRules}>Export rules</button><button className="button secondary compact" type="button" onClick={() => onSource(starterRules, 'nope-starter.yar')}>Reset starter pack</button></div></div>
       <textarea className="yara-editor" spellCheck={false} aria-label="YARA rule source" value={source} disabled={busy} onChange={(event) => onSource(event.target.value, sourceName)} />
       <div className="yara-run"><span>Includes disabled · slow patterns rejected · 10,000 rule maximum</span><button className="button primary" type="button" disabled={busy || !source.trim()} onClick={onRun}>{busy ? stage === 'scanning' ? 'Scanning…' : 'Compiling…' : 'Compile & scan'}</button></div>
       <input ref={importRef} hidden type="file" accept=".yar,.yara" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importRules(file).catch((cause) => setImportError(cause instanceof Error ? cause.message : 'Rule import failed')); event.currentTarget.value = '' }} />

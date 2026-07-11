@@ -1,5 +1,5 @@
 [advisories]
-# YARA-X's PE module uses `rsa` for public Authenticode inspection only. Aegis
+# YARA-X's PE module uses `rsa` for public Authenticode inspection only. NOPE
 # never holds or performs operations with private RSA keys, so the Marvin
 # private-key timing attack is not reachable in this browser-only scanner.
 ignore = ["RUSTSEC-2023-0071"]

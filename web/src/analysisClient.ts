@@ -67,7 +67,7 @@ export class AnalysisClient {
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
-    const worker = new Worker(new URL('./analyzer.worker.ts', import.meta.url), { type: 'module', name: 'aegis-analyzer' })
+    const worker = new Worker(new URL('./analyzer.worker.ts', import.meta.url), { type: 'module', name: 'nope-analyzer' })
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.handleMessage(event.data)
     worker.onerror = () => this.failAndReset(new Error(
       this.workerReady
