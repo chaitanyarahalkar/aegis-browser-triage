@@ -153,6 +153,19 @@ export default function App() {
     }
   }, [inspectFile])
 
+  const analyzeArtifactDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-runtime-artifact-pe32.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Runtime artifact fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Runtime artifact fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
   const runDynamicAnalysis = useCallback(async () => {
     if (!currentFile) return
     const run = ++dynamicRun.current
@@ -252,6 +265,7 @@ export default function App() {
               inputRef={inputRef}
               inspectFile={inspectFile}
               analyzeDemo={analyzeDemo}
+              analyzeArtifactDemo={analyzeArtifactDemo}
             />
             <div className="privacy-row">
               <span>No uploads</span>
@@ -315,12 +329,13 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
   inspectFile: (file: File) => Promise<void>
   analyzeDemo: () => Promise<void>
+  analyzeArtifactDemo: () => Promise<void>
 }) {
   return (
     <div
@@ -342,6 +357,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
       <div className="button-row">
         <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
         <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
       </div>
       <input
         ref={inputRef}

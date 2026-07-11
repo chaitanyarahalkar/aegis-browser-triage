@@ -2,7 +2,6 @@ import { expect, test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 
 const safePe = readFileSync(new URL('../public/fixtures/aegis-safe-dynamic-pe32.exe', import.meta.url))
-const artifactPe = readFileSync(new URL('../public/fixtures/aegis-safe-runtime-artifact-pe32.exe', import.meta.url))
 const safeMacos = readFileSync(new URL('../../fixtures/aegis-safe-sample-macos', import.meta.url))
 
 async function loadSafeDemo(page: import('@playwright/test').Page) {
@@ -149,11 +148,7 @@ test('shows structured YARA diagnostics without taking down static analysis', as
 test('captures runtime artifacts, scans them with YARA, and gates raw export', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop artifact inspection workflow')
   await page.goto('/')
-  await page.getByTestId('file-input').setInputFiles({
-    name: 'aegis-safe-runtime-artifact-pe32.exe',
-    mimeType: 'application/octet-stream',
-    buffer: artifactPe,
-  })
+  await page.getByRole('button', { name: 'Use runtime artifact demo' }).click()
   await expect(page.getByText('aegis-safe-runtime-artifact-pe32.exe')).toBeVisible()
   await runDynamic(page)
   await page.getByRole('button', { name: /^Artifacts/ }).click()
