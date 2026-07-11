@@ -1,12 +1,16 @@
 mod api;
 mod artifact;
 mod cpu;
+mod cpu64;
 mod engine;
+mod engine64;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixture;
 mod generation;
 mod loader;
+mod loader64;
 mod memory;
+mod memory64;
 mod model;
 mod network;
 mod provenance;
@@ -42,13 +46,13 @@ pub enum DynamicError {
     #[error("dynamic memory limit exceeded")]
     MemoryLimit,
     #[error("memory region overlaps at 0x{address:08x}")]
-    OverlappingRegion { address: u32 },
+    OverlappingRegion { address: u64 },
     #[error("memory read failed at 0x{address:08x}")]
-    MemoryRead { address: u32 },
+    MemoryRead { address: u64 },
     #[error("memory write failed at 0x{address:08x}")]
-    MemoryWrite { address: u32 },
+    MemoryWrite { address: u64 },
     #[error("instruction fetch failed at 0x{address:08x}")]
-    MemoryExecute { address: u32 },
+    MemoryExecute { address: u64 },
     #[error("unsupported register {0}")]
     UnsupportedRegister(String),
     #[error("unsupported operand {0}")]
@@ -80,7 +84,13 @@ pub fn analyze_dynamic_with_artifacts(
     if bytes.len() > analysis_core_limit() {
         return Err(DynamicError::TooLarge);
     }
-    engine::run(name.into(), bytes, options.clone().bounded())
+    let pe =
+        goblin::pe::PE::parse(bytes).map_err(|error| DynamicError::InvalidPe(error.to_string()))?;
+    if pe.is_64 {
+        engine64::run(name.into(), bytes, options.clone().bounded())
+    } else {
+        engine::run(name.into(), bytes, options.clone().bounded())
+    }
 }
 
 const fn analysis_core_limit() -> usize {
@@ -123,7 +133,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 12);
+        assert_eq!(report.schema_version, 13);
         assert_eq!(report.snapshots.first().unwrap().trigger, "entry");
         assert_eq!(report.snapshots.last().unwrap().trigger, "final");
         assert!(
@@ -137,6 +147,68 @@ mod tests {
         assert_eq!(report.coverage.modeled_api_calls, 4);
         assert_eq!(report.coverage.unmodeled_api_calls, 0);
         assert!(report.coverage.unique_instruction_addresses >= 8);
+    }
+
+    #[test]
+    fn safe_pe64_executes_with_the_microsoft_x64_abi() {
+        let bytes = fixture::safe_dynamic_pe64();
+        let report = analyze_dynamic("safe64.exe", &bytes, &DynamicOptions::default()).unwrap();
+        assert!(matches!(
+            report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert_eq!(report.profile.architecture, "x86-64 (64-bit)");
+        assert!(report.profile.image_base > u32::MAX as u64);
+        assert_eq!(
+            report
+                .api_calls
+                .iter()
+                .map(|event| event.name.as_str())
+                .collect::<Vec<_>>(),
+            ["GetTickCount", "Sleep", "WinExec", "ExitProcess"]
+        );
+        assert_eq!(report.virtual_time_ms, 1_000_025);
+        assert_eq!(report.snapshots[0].registers.rsp % 16, 8);
+        assert_eq!(report.snapshots[0].registers.rcx, report.profile.image_base);
+        assert_eq!(report.snapshots[0].registers.rdx, 1);
+        assert_eq!(report.processes.len(), 1);
+        assert!(report.processes[0].command.contains("x64.example.test"));
+        assert_eq!(report.unwind_functions.len(), 1);
+        assert!(
+            report
+                .system
+                .iter()
+                .any(|event| event.operation == "map_teb_peb")
+        );
+        assert!(
+            report
+                .instructions
+                .iter()
+                .any(|event| event.address == 0x0000_0001_4000_1150)
+        );
+        assert_eq!(report.schema_version, 13);
+    }
+
+    #[test]
+    fn pe64_reports_are_deterministic_and_truncation_safe() {
+        let bytes = fixture::safe_dynamic_pe64();
+        let first = analyze_dynamic("safe64.exe", &bytes, &DynamicOptions::default()).unwrap();
+        let second = analyze_dynamic("safe64.exe", &bytes, &DynamicOptions::default()).unwrap();
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap()
+        );
+        for length in 1..bytes.len() {
+            let _ = analyze_dynamic(
+                "truncated64.exe",
+                &bytes[..length],
+                &DynamicOptions {
+                    max_instructions: 64,
+                    max_trace_events: 16,
+                    ..DynamicOptions::default()
+                },
+            );
+        }
     }
 
     #[test]

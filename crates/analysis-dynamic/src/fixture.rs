@@ -88,6 +88,110 @@ pub fn safe_dynamic_pe32() -> Vec<u8> {
     bytes
 }
 
+pub fn safe_dynamic_pe64() -> Vec<u8> {
+    let mut bytes = vec![0u8; 0x800];
+    bytes[0..2].copy_from_slice(b"MZ");
+    put_u32(&mut bytes, 0x3c, 0x80);
+    bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+
+    put_u16(&mut bytes, 0x84, 0x8664);
+    put_u16(&mut bytes, 0x86, 2);
+    put_u32(&mut bytes, 0x88, 0x66aa_6400);
+    put_u16(&mut bytes, 0x94, 0x00f0);
+    put_u16(&mut bytes, 0x96, 0x0022);
+
+    let optional = 0x98;
+    put_u16(&mut bytes, optional, 0x020b);
+    bytes[optional + 2] = 14;
+    put_u32(&mut bytes, optional + 4, 0x200);
+    put_u32(&mut bytes, optional + 8, 0x400);
+    put_u32(&mut bytes, optional + 16, 0x1000);
+    put_u32(&mut bytes, optional + 20, 0x1000);
+    put_u64(&mut bytes, optional + 24, 0x0000_0001_4000_0000);
+    put_u32(&mut bytes, optional + 32, 0x1000);
+    put_u32(&mut bytes, optional + 36, 0x200);
+    put_u16(&mut bytes, optional + 40, 6);
+    put_u16(&mut bytes, optional + 48, 6);
+    put_u32(&mut bytes, optional + 56, 0x3000);
+    put_u32(&mut bytes, optional + 60, 0x200);
+    put_u16(&mut bytes, optional + 68, 3);
+    put_u16(&mut bytes, optional + 70, 0x0160);
+    put_u64(&mut bytes, optional + 72, 0x10_0000);
+    put_u64(&mut bytes, optional + 80, 0x1000);
+    put_u64(&mut bytes, optional + 88, 0x10_0000);
+    put_u64(&mut bytes, optional + 96, 0x1000);
+    put_u32(&mut bytes, optional + 108, 16);
+    // Import, exception/unwind, TLS, and IAT directories.
+    put_u32(&mut bytes, optional + 120, 0x2000);
+    put_u32(&mut bytes, optional + 124, 0x28);
+    put_u32(&mut bytes, optional + 136, 0x2180);
+    put_u32(&mut bytes, optional + 140, 12);
+    put_u32(&mut bytes, optional + 184, 0x21c0);
+    put_u32(&mut bytes, optional + 188, 40);
+    put_u32(&mut bytes, optional + 208, 0x2080);
+    put_u32(&mut bytes, optional + 212, 0x28);
+
+    let section = optional + 0xf0;
+    write_section(
+        &mut bytes,
+        section,
+        b".text",
+        (0x200, 0x1000, 0x200, 0x200, 0x6000_0020),
+    );
+    write_section(
+        &mut bytes,
+        section + 40,
+        b".idata",
+        (0x400, 0x2000, 0x400, 0x400, 0xc000_0040),
+    );
+
+    let code = [
+        0x48, 0x83, 0xec, 0x28, // sub rsp, 40-byte shadow/alignment area
+        0xff, 0x15, 0x76, 0x10, 0x00, 0x00, // call [rip+0x1076] GetTickCount
+        0xb9, 0x19, 0x00, 0x00, 0x00, // mov ecx, 25
+        0xff, 0x15, 0x73, 0x10, 0x00, 0x00, // call [rip+0x1073] Sleep
+        0x48, 0x8d, 0x0d, 0xe4, 0x00, 0x00, 0x00, // lea rcx,[rip+0xe4]
+        0xba, 0x01, 0x00, 0x00, 0x00, // mov edx, 1
+        0xff, 0x15, 0x69, 0x10, 0x00, 0x00, // call [rip+0x1069] WinExec
+        0x31, 0xc9, // xor ecx,ecx
+        0xff, 0x15, 0x69, 0x10, 0x00, 0x00, // call [rip+0x1069] ExitProcess
+        0x48, 0x83, 0xc4, 0x28, 0xc3,
+    ];
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+    write_c_string(
+        &mut bytes,
+        0x300,
+        b"powershell.exe -NoProfile https://x64.example.test",
+    );
+    bytes[0x350] = 0xc3; // TLS callback: ret
+
+    put_u32(&mut bytes, 0x400, 0x2040);
+    put_u32(&mut bytes, 0x40c, 0x20c0);
+    put_u32(&mut bytes, 0x410, 0x2080);
+    for (index, name_rva) in [0x2100u64, 0x2110, 0x2120, 0x2130, 0]
+        .into_iter()
+        .enumerate()
+    {
+        put_u64(&mut bytes, 0x440 + index * 8, name_rva);
+        put_u64(&mut bytes, 0x480 + index * 8, name_rva);
+    }
+    write_c_string(&mut bytes, 0x4c0, b"KERNEL32.dll");
+    write_hint_name(&mut bytes, 0x500, b"GetTickCount");
+    write_hint_name(&mut bytes, 0x510, b"Sleep");
+    write_hint_name(&mut bytes, 0x520, b"WinExec");
+    write_hint_name(&mut bytes, 0x530, b"ExitProcess");
+
+    put_u32(&mut bytes, 0x580, 0x1000);
+    put_u32(&mut bytes, 0x584, 0x1034);
+    put_u32(&mut bytes, 0x588, 0x2190);
+    bytes[0x590..0x598].copy_from_slice(&[0x01, 0x04, 0x01, 0x00, 0x04, 0x42, 0, 0]);
+
+    put_u64(&mut bytes, 0x5c0 + 24, 0x0000_0001_4000_21f0);
+    put_u64(&mut bytes, 0x5f0, 0x0000_0001_4000_1150);
+    put_u64(&mut bytes, 0x5f8, 0);
+    bytes
+}
+
 pub fn dynamic_resolution_pe32() -> Vec<u8> {
     let mut bytes = safe_dynamic_pe32();
     let code = [
@@ -466,4 +570,8 @@ fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
 
 fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }

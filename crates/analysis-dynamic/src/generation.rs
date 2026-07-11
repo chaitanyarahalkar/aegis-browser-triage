@@ -55,7 +55,7 @@ impl GenerationTracker {
             sequence,
             parent_id,
             artifact_id: observation.artifact_id,
-            region_base: observation.region_base,
+            region_base: observation.region_base.into(),
             size: observation.size,
             capture_instruction: observation.instruction,
             virtual_time_ms: observation.virtual_time_ms,

@@ -2,7 +2,9 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "safe-dynamic-pe32.exe".into());
-    let bytes = if std::env::args().any(|argument| argument == "--artifact") {
+    let bytes = if std::env::args().any(|argument| argument == "--x64") {
+        analysis_dynamic::fixture::safe_dynamic_pe64()
+    } else if std::env::args().any(|argument| argument == "--artifact") {
         analysis_dynamic::fixture::runtime_artifact_pe32()
     } else if std::env::args().any(|argument| argument == "--seh") {
         analysis_dynamic::fixture::seh_pe32()

@@ -138,7 +138,7 @@ export interface DynamicProvenanceSource { id: string; kind: DynamicProvenanceSo
 export interface DynamicProvenanceFlow { sequence: number; source_ids: string[]; sink: DynamicProvenanceSinkKind; destination: string; address: number; size: number; api: string; instruction: number }
 export interface DynamicExecutionSnapshot {
   sequence: number; trigger: string; instruction: number; virtual_time_ms: number; dirty_memory_regions: number; state_sha256: string
-  registers: { eax: number; ebx: number; ecx: number; edx: number; esi: number; edi: number; ebp: number; esp: number; eip: number; eflags: number }
+  registers: { rax: number; rbx: number; rcx: number; rdx: number; rsi: number; rdi: number; rbp: number; rsp: number; r8: number; r9: number; r10: number; r11: number; r12: number; r13: number; r14: number; r15: number; rip: number; rflags: number }
   events: { api_calls: number; processes: number; filesystem: number; registry: number; network: number; memory: number; injection: number; persistence: number; provenance_flows: number }
 }
 
@@ -268,6 +268,7 @@ export interface DynamicReport {
   provenance_stats: { source_count: number; flow_count: number; tracked_ranges: number; truncated: boolean }
   snapshots: DynamicExecutionSnapshot[]
   snapshot_stats: { count: number; truncated: boolean; max_snapshots: number; max_dirty_regions: number; sampled_bytes_per_region: number }
+  unwind_functions: Array<{ begin_address: number; end_address: number; unwind_info_address: number }>
   memory: DynamicMemoryEvent[]
   injection: DynamicInjectionEvent[]
   persistence: DynamicPersistenceEvent[]

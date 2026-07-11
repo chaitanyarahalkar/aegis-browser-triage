@@ -77,7 +77,9 @@ impl Memory {
             .iter()
             .any(|region| start < region.end() && end > region.start)
         {
-            return Err(DynamicError::OverlappingRegion { address: start });
+            return Err(DynamicError::OverlappingRegion {
+                address: start.into(),
+            });
         }
         self.allocated += size;
         self.regions.push(Region {
@@ -97,7 +99,9 @@ impl Memory {
             .regions
             .iter()
             .find(|region| region.contains(address, length) && region.permissions.read)
-            .ok_or(DynamicError::MemoryRead { address })?;
+            .ok_or(DynamicError::MemoryRead {
+                address: address.into(),
+            })?;
         let offset = (address - region.start) as usize;
         Ok(&region.data[offset..offset + length])
     }
@@ -109,7 +113,9 @@ impl Memory {
             .find(|region| {
                 address >= region.start && address < region.end() && region.permissions.execute
             })
-            .ok_or(DynamicError::MemoryExecute { address })?;
+            .ok_or(DynamicError::MemoryExecute {
+                address: address.into(),
+            })?;
         let offset = (address - region.start) as usize;
         let end = (offset + max_length).min(region.data.len());
         Ok(&region.data[offset..end])
@@ -130,7 +136,9 @@ impl Memory {
             .find(|region| {
                 region.contains(address, data.len()) && (force || region.permissions.write)
             })
-            .ok_or(DynamicError::MemoryWrite { address })?;
+            .ok_or(DynamicError::MemoryWrite {
+                address: address.into(),
+            })?;
         let offset = (address - region.start) as usize;
         region.data[offset..offset + data.len()].copy_from_slice(data);
         if !force && !data.is_empty() {
@@ -208,7 +216,9 @@ impl Memory {
             .regions
             .iter_mut()
             .find(|region| region.contains(address, size))
-            .ok_or(DynamicError::MemoryWrite { address })?;
+            .ok_or(DynamicError::MemoryWrite {
+                address: address.into(),
+            })?;
         region.permissions = permissions;
         Ok(())
     }

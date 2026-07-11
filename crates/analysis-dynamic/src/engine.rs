@@ -97,8 +97,8 @@ pub(crate) fn run(
     let profile = ExecutionProfile {
         architecture: "x86 (32-bit)".into(),
         operating_system: environment.windows_version.clone(),
-        image_base: loaded.image_base,
-        entry_point: loaded.entry_point,
+        image_base: loaded.image_base.into(),
+        entry_point: loaded.entry_point.into(),
         instruction_limit: options.max_instructions,
         trace_limit: options.max_trace_events,
         network_mode: environment.network_mode.description().into(),
@@ -264,6 +264,7 @@ pub(crate) fn run(
         provenance_stats,
         snapshots: machine.snapshots,
         snapshot_stats,
+        unwind_functions: Vec::new(),
         memory: machine.memory_events,
         injection: machine.injection,
         persistence: machine.persistence,
@@ -375,8 +376,8 @@ impl GuestThread {
     fn summary(&self) -> ThreadSummary {
         ThreadSummary {
             tid: self.tid,
-            start_address: self.start_address,
-            parameter: self.parameter,
+            start_address: self.start_address.into(),
+            parameter: self.parameter.into(),
             state: if self.state == GuestThreadState::Runnable {
                 "runnable"
             } else {
@@ -471,7 +472,9 @@ impl Machine {
                     "invalid or malformed instruction encoding".into(),
                     hex::encode(bytes),
                 );
-                let fallback = Termination::InvalidInstruction { address };
+                let fallback = Termination::InvalidInstruction {
+                    address: address.into(),
+                };
                 if !self.dispatch_exception(
                     0xc000_001d,
                     "illegal_instruction",
@@ -488,7 +491,7 @@ impl Machine {
             if self.instructions.len() < self.options.max_trace_events {
                 self.instructions.push(InstructionEvent {
                     index: self.instruction_count,
-                    address,
+                    address: address.into(),
                     bytes: hex::encode(&bytes[..length.min(bytes.len())]),
                     text: instruction.to_string(),
                 });
@@ -515,7 +518,7 @@ impl Machine {
                             .map_or_else(String::new, |event| event.bytes.clone());
                         self.record_instruction_diagnostic(address, instruction.to_string(), bytes);
                         Termination::UnsupportedInstruction {
-                            address,
+                            address: address.into(),
                             instruction: instruction.to_string(),
                         }
                     }
@@ -576,7 +579,7 @@ impl Machine {
             .rev()
             .collect();
         self.first_unsupported = Some(InstructionDiagnostic {
-            address,
+            address: address.into(),
             instruction,
             bytes,
             nearby_trace,
@@ -646,8 +649,8 @@ impl Machine {
             operation: operation.into(),
             instruction: self.instruction_count,
             virtual_time_ms: self.virtual_time_ms,
-            start_address: thread.start_address,
-            parameter: thread.parameter,
+            start_address: thread.start_address.into(),
+            parameter: thread.parameter.into(),
         });
     }
 
@@ -776,9 +779,12 @@ impl Machine {
             sequence: event_index as u64,
             code: pending.code,
             name: pending.name.clone(),
-            address: pending.address,
-            handler: Some(handler),
-            establisher_frame: pending.vectored_index.is_none().then_some(pending.frame),
+            address: pending.address.into(),
+            handler: Some(handler.into()),
+            establisher_frame: pending
+                .vectored_index
+                .is_none()
+                .then_some(pending.frame.into()),
             disposition: None,
             outcome: "dispatched".into(),
         });
@@ -828,7 +834,7 @@ impl Machine {
     fn complete_exception_handler(&mut self) {
         let Some(mut pending) = self.pending_exception.take() else {
             self.termination = Some(Termination::MemoryFault {
-                address: EXCEPTION_RETURN_SENTINEL,
+                address: EXCEPTION_RETURN_SENTINEL.into(),
                 operation: "exception return without pending handler".into(),
             });
             return;
@@ -906,7 +912,7 @@ impl Machine {
             virtual_time_ms: self.virtual_time_ms,
             timeline_sequence: self.timeline.len().checked_sub(1).map(|value| value as u64),
             trigger: trigger.into(),
-            address,
+            address: address.map(u64::from),
             path,
         }
     }
@@ -1048,29 +1054,45 @@ impl Machine {
         };
         let dirty_memory_regions = self.memory.dirty_regions().count();
         let registers = SnapshotRegisters {
-            eax: self.cpu.eax,
-            ebx: self.cpu.ebx,
-            ecx: self.cpu.ecx,
-            edx: self.cpu.edx,
-            esi: self.cpu.esi,
-            edi: self.cpu.edi,
-            ebp: self.cpu.ebp,
-            esp: self.cpu.esp,
-            eip: self.cpu.eip,
-            eflags: self.cpu.flags_value(),
+            rax: self.cpu.eax.into(),
+            rbx: self.cpu.ebx.into(),
+            rcx: self.cpu.ecx.into(),
+            rdx: self.cpu.edx.into(),
+            rsi: self.cpu.esi.into(),
+            rdi: self.cpu.edi.into(),
+            rbp: self.cpu.ebp.into(),
+            rsp: self.cpu.esp.into(),
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rip: self.cpu.eip.into(),
+            rflags: self.cpu.flags_value().into(),
         };
         let mut hasher = Sha256::new();
         for value in [
-            registers.eax,
-            registers.ebx,
-            registers.ecx,
-            registers.edx,
-            registers.esi,
-            registers.edi,
-            registers.ebp,
-            registers.esp,
-            registers.eip,
-            registers.eflags,
+            registers.rax,
+            registers.rbx,
+            registers.rcx,
+            registers.rdx,
+            registers.rsi,
+            registers.rdi,
+            registers.rbp,
+            registers.rsp,
+            registers.r8,
+            registers.r9,
+            registers.r10,
+            registers.r11,
+            registers.r12,
+            registers.r13,
+            registers.r14,
+            registers.r15,
+            registers.rip,
+            registers.rflags,
         ] {
             hasher.update(value.to_le_bytes());
         }
@@ -2127,7 +2149,7 @@ impl Machine {
             module: import.module,
             name: import.name.clone(),
             arguments: display_args,
-            result,
+            result: result.into(),
             summary: summary.clone(),
         });
         let (category, operation, subject) =
@@ -3092,8 +3114,8 @@ impl Machine {
                         .allocate_remote(process_handle, address, size as usize);
                 self.injection.push(InjectionEvent {
                     operation: "allocate_remote".into(),
-                    process_handle,
-                    address,
+                    process_handle: process_handle.into(),
+                    address: address.into(),
                     size,
                     preview: None,
                 });
@@ -3125,8 +3147,8 @@ impl Machine {
                 }
                 self.injection.push(InjectionEvent {
                     operation: "write_remote".into(),
-                    process_handle,
-                    address,
+                    process_handle: process_handle.into(),
+                    address: address.into(),
                     size: written,
                     preview: Some(preview.clone()),
                 });
@@ -3152,8 +3174,8 @@ impl Machine {
                 let size = args.get(2).copied().unwrap_or(0);
                 self.injection.push(InjectionEvent {
                     operation: "protect_remote".into(),
-                    process_handle,
-                    address,
+                    process_handle: process_handle.into(),
+                    address: address.into(),
                     size,
                     preview: Some(protection(args.get(3).copied().unwrap_or(0)).display()),
                 });
@@ -3177,8 +3199,8 @@ impl Machine {
                 }
                 self.injection.push(InjectionEvent {
                     operation: "execute_remote".into(),
-                    process_handle,
-                    address,
+                    process_handle: process_handle.into(),
+                    address: address.into(),
                     size: 0,
                     preview: Some("CreateRemoteThread".into()),
                 });
@@ -3193,8 +3215,8 @@ impl Machine {
                 let thread_handle = args.get(1).copied().unwrap_or(0);
                 self.injection.push(InjectionEvent {
                     operation: "queue_apc".into(),
-                    process_handle: thread_handle,
-                    address,
+                    process_handle: thread_handle.into(),
+                    address: address.into(),
                     size: 0,
                     preview: None,
                 });
@@ -3208,7 +3230,7 @@ impl Machine {
                 let handle = args.first().copied().unwrap_or(0);
                 self.injection.push(InjectionEvent {
                     operation: "resume_thread".into(),
-                    process_handle: handle,
+                    process_handle: handle.into(),
                     address: 0,
                     size: 0,
                     preview: None,
@@ -4751,7 +4773,7 @@ impl Machine {
             operation: operation.into(),
             target: target.into(),
             detail: detail.into(),
-            result,
+            result: result.into(),
         });
     }
 
@@ -4891,7 +4913,7 @@ impl Machine {
             Ok(()) => {
                 self.memory_events.push(MemoryEvent {
                     operation: "allocate".into(),
-                    address,
+                    address: address.into(),
                     size: size as u32,
                     permissions: permissions.display(),
                 });
@@ -4947,7 +4969,7 @@ impl Machine {
             Ok(()) => {
                 self.memory_events.push(MemoryEvent {
                     operation: "allocate".into(),
-                    address,
+                    address: address.into(),
                     size: size as u32,
                     permissions: Permissions::READ_WRITE.display(),
                 });
@@ -4981,7 +5003,7 @@ impl Machine {
         }
         self.memory_events.push(MemoryEvent {
             operation: "free".into(),
-            address,
+            address: address.into(),
             size: 0,
             permissions: "---".into(),
         });
@@ -5054,7 +5076,7 @@ impl Machine {
             Ok(()) => {
                 self.memory_events.push(MemoryEvent {
                     operation: "protect".into(),
-                    address,
+                    address: address.into(),
                     size: size as u32,
                     permissions: permissions.display(),
                 });

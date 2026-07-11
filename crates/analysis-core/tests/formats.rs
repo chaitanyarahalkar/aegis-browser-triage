@@ -79,6 +79,31 @@ fn parses_supplied_arm64_macos_fixture() {
 }
 
 #[test]
+fn parses_supplied_pe64_dynamic_fixture() {
+    let bytes = include_bytes!("../../../web/public/fixtures/aegis-safe-dynamic-pe64.exe");
+    let report = analyze(
+        "aegis-safe-dynamic-pe64.exe",
+        bytes,
+        &AnalysisOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(report.sample.detected_format, BinaryFormat::Pe);
+    assert!(matches!(
+        report.format,
+        FormatReport::Pe { bitness: 64, .. }
+    ));
+    assert!(
+        report
+            .sample
+            .architecture
+            .as_deref()
+            .unwrap_or_default()
+            .contains("X86_64")
+    );
+    assert!(report.imports.iter().any(|item| item.name == "WinExec"));
+}
+
+#[test]
 fn parses_wasm_function_and_export() {
     let wasm = [
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,

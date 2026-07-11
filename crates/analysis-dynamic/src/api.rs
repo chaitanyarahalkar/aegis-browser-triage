@@ -24,8 +24,11 @@ pub fn signature(name: &str) -> ApiSignature {
     let normalized = normalize_name(name);
     let (argument_count, modeled) = match normalized.as_str() {
         "gettickcount"
+        | "gettickcount64"
+        | "getcurrentprocess"
         | "getcurrentprocessid"
         | "getcurrentthreadid"
+        | "isdebuggerpresent"
         | "getprocessheap"
         | "getcommandlinea"
         | "getcommandlinew"
@@ -118,7 +121,6 @@ pub fn signature(name: &str) -> ApiSignature {
         | "ntqueryinformationprocess" => (5, true),
         "createremotethread" => (7, true),
         "resumethread" => (1, true),
-        "isdebuggerpresent" => (0, true),
         "queryperformancecounter" | "getsysteminfo" | "globalmemorystatusex" => (1, true),
         "getcomputernamea"
         | "getcomputernamew"

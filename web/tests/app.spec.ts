@@ -51,7 +51,35 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v12', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v13', { exact: true })).toBeVisible()
+})
+
+test('runs a PE64 image through the x86-64 interpreter and ABI', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop x64 inspection workflow')
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Use safe PE64 demo' }).click()
+  await expect(page.getByText('aegis-safe-dynamic-pe64.exe')).toBeVisible()
+  await expect(page.locator('.sample-title')).toContainText('PE · 64-bit X86_64')
+  await runDynamic(page)
+  await expect(page.getByText('Process execution requested')).toBeVisible()
+  await page.getByRole('button', { name: /^API calls/ }).click()
+  for (const api of ['GetTickCount', 'Sleep', 'WinExec', 'ExitProcess']) {
+    await expect(page.getByText(`KERNEL32.dll!${api}`, { exact: true })).toBeVisible()
+  }
+  await page.getByRole('button', { name: 'Unwind (1)' }).click()
+  await expect(page.getByRole('heading', { name: 'PE64 unwind metadata' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: '0x0000000140001000' })).toBeVisible()
+  await page.getByRole('button', { name: /^Instructions/ }).click()
+  await expect(page.locator('tbody')).toContainText('sub rsp,28h')
+  await expect(page.locator('tbody')).toContainText('lea rcx')
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export report' }).click()
+  const download = await downloadPromise
+  const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
+  expect(json.dynamic.schema_version).toBe(13)
+  expect(json.dynamic.profile.architecture).toBe('x86-64 (64-bit)')
+  expect(json.dynamic.profile.image_base).toBe(0x140000000)
+  expect(json.dynamic.unwind_functions).toHaveLength(1)
 })
 
 test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
@@ -161,7 +189,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(12)
+  expect(json.dynamic.schema_version).toBe(13)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')

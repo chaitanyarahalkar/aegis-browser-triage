@@ -2,7 +2,7 @@
 
 Aegis is a local-only binary triage workbench that runs in the browser. A Rust
 engine performs static inspection of PE, ELF, Mach-O, and WebAssembly files. A
-second Rust engine can emulate 32-bit x86 Windows PE samples inside a dedicated
+second Rust engine can emulate 32-bit x86 and 64-bit x86-64 Windows PE samples inside a dedicated
 Web Worker. A third, lazy-loaded Rust engine compiles and scans YARA rules with
 YARA-X entirely in the browser.
 
@@ -25,6 +25,9 @@ Dynamic reports currently include:
 
 - PE32/x86 image loading, TLS callbacks, imports, dynamic API resolution, a
   minimal PEB/TEB, stack, and guest memory
+- PE64/x86-64 loading with sparse 64-bit guest addresses, RIP- and GS-relative
+  addressing, 16 general-purpose registers, Microsoft x64 register arguments,
+  shadow-space/stack arguments, TLS callbacks, and bounded unwind metadata
 - Bounded instruction traces and termination reasons
 - Expanded integer, conditional, flag, loop, and repeated string instructions
 - Bit-test/scan, atomic exchange, double-shift, SSE2 move/logic/scalar arithmetic,

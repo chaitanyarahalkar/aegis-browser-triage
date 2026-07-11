@@ -50,7 +50,7 @@ Static analysis:
 
 Dynamic analysis:
 
-- PE32/x86 only; other formats remain static-only
+- PE32/x86 and PE64/x86-64 only; other formats remain static-only
 - Explicit user initiation after static analysis
 - Separate worker and a 10-second UI watchdog
 - 1,000,000 instructions and 2,000 trace records by default
@@ -78,7 +78,13 @@ Dynamic analysis:
   the first and last 512 bytes of 64 dirty regions; reports contain registers,
   counters, and hashes but no raw guest-memory snapshot bytes
 - 4 MiB per synthetic remote-memory region and 16 MiB total remote-process memory
-- A bounded synthetic PEB/TEB and process environment that reveal no host values
+- Bounded synthetic PEB/TEB structures and process environments reveal no host values;
+  x86 uses `FS` and x64 uses `GS:[0x30]`/`GS:[0x60]` conventions
+- PE64 execution uses sparse `u64` guest addresses, Microsoft x64 RCX/RDX/R8/R9
+  register arguments, 32-byte shadow space, and bounded stack arguments. Reported
+  fixture addresses remain below JavaScript's exact-integer ceiling
+- PE64 exception-directory parsing retains at most 4,096 `RUNTIME_FUNCTION`
+  records. Metadata is reported, but full x64 language-specific unwinding is not executed
 - Guest SEH chains dispatch at most 16 handlers per exception and retain at most 128
   exception events; records and contexts live only in synthetic guest memory
 - Guest scheduling is limited to 64 threads and 4,096 scheduler events. It is
@@ -140,6 +146,11 @@ encrypted, self-modifying, multi-process, kernel-mode, environment-dependent,
 or runtime-downloaded behavior may be missed. The current interpreter is not a
 complete x86 CPU or Windows implementation; a sample can evade or simply exceed
 its supported surface.
+
+PE64 support currently covers core integer, memory, control-flow, RIP-relative,
+and Microsoft x64 ABI behavior plus a conservative Windows API subset. The broader
+PE32 synthetic API, guest-thread, SEH, artifact, and provenance surface is not yet
+at feature parity on x64; unsupported paths terminate with structured diagnostics.
 
 Provenance is intentionally API-level and follows modeled range writes, copies,
 conversions, and crypto outputs. It is not whole-CPU taint propagation or symbolic

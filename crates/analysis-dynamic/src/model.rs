@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 12;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 13;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -323,6 +323,7 @@ pub struct DynamicReport {
     pub provenance_stats: ProvenanceStats,
     pub snapshots: Vec<ExecutionSnapshot>,
     pub snapshot_stats: SnapshotStats,
+    pub unwind_functions: Vec<RuntimeFunction>,
     pub memory: Vec<MemoryEvent>,
     pub injection: Vec<InjectionEvent>,
     pub persistence: Vec<PersistenceEvent>,
@@ -396,7 +397,7 @@ pub struct ProvenanceSource {
     pub id: String,
     pub kind: ProvenanceSourceKind,
     pub label: String,
-    pub address: u32,
+    pub address: u64,
     pub size: u64,
     pub api: String,
     pub instruction: u64,
@@ -409,7 +410,7 @@ pub struct ProvenanceFlow {
     pub source_ids: Vec<String>,
     pub sink: ProvenanceSinkKind,
     pub destination: String,
-    pub address: u32,
+    pub address: u64,
     pub size: u64,
     pub api: String,
     pub instruction: u64,
@@ -437,16 +438,24 @@ pub struct ExecutionSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotRegisters {
-    pub eax: u32,
-    pub ebx: u32,
-    pub ecx: u32,
-    pub edx: u32,
-    pub esi: u32,
-    pub edi: u32,
-    pub ebp: u32,
-    pub esp: u32,
-    pub eip: u32,
-    pub eflags: u32,
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rip: u64,
+    pub rflags: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -482,7 +491,7 @@ pub struct ArtifactSummary {
     pub entropy: f64,
     pub detected_format: String,
     pub trigger: String,
-    pub address: Option<u32>,
+    pub address: Option<u64>,
     pub path: Option<String>,
     pub permissions: Option<String>,
     pub strings: Vec<ArtifactString>,
@@ -498,7 +507,7 @@ pub struct ArtifactOrigin {
     pub virtual_time_ms: u64,
     pub timeline_sequence: Option<u64>,
     pub trigger: String,
-    pub address: Option<u32>,
+    pub address: Option<u64>,
     pub path: Option<String>,
 }
 
@@ -529,7 +538,7 @@ pub struct PayloadGeneration {
     pub sequence: u64,
     pub parent_id: Option<String>,
     pub artifact_id: String,
-    pub region_base: u32,
+    pub region_base: u64,
     pub size: u64,
     pub capture_instruction: u64,
     pub virtual_time_ms: u64,
@@ -561,9 +570,9 @@ pub struct ExceptionEvent {
     pub sequence: u64,
     pub code: u32,
     pub name: String,
-    pub address: u32,
-    pub handler: Option<u32>,
-    pub establisher_frame: Option<u32>,
+    pub address: u64,
+    pub handler: Option<u64>,
+    pub establisher_frame: Option<u64>,
     pub disposition: Option<i32>,
     pub outcome: String,
 }
@@ -571,8 +580,8 @@ pub struct ExceptionEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadSummary {
     pub tid: u32,
-    pub start_address: u32,
-    pub parameter: u32,
+    pub start_address: u64,
+    pub parameter: u64,
     pub state: String,
     pub instruction_count: u64,
     pub exit_code: Option<u32>,
@@ -585,8 +594,8 @@ pub struct ThreadEvent {
     pub operation: String,
     pub instruction: u64,
     pub virtual_time_ms: u64,
-    pub start_address: u32,
-    pub parameter: u32,
+    pub start_address: u64,
+    pub parameter: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -595,14 +604,14 @@ pub struct SystemEvent {
     pub operation: String,
     pub target: String,
     pub detail: String,
-    pub result: u32,
+    pub result: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InjectionEvent {
     pub operation: String,
-    pub process_handle: u32,
-    pub address: u32,
+    pub process_handle: u64,
+    pub address: u64,
     pub size: u32,
     pub preview: Option<String>,
 }
@@ -635,7 +644,7 @@ pub struct ExecutionDiagnostics {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstructionDiagnostic {
-    pub address: u32,
+    pub address: u64,
     pub instruction: String,
     pub bytes: String,
     pub nearby_trace: Vec<InstructionEvent>,
@@ -645,8 +654,8 @@ pub struct InstructionDiagnostic {
 pub struct ExecutionProfile {
     pub architecture: String,
     pub operating_system: String,
-    pub image_base: u32,
-    pub entry_point: u32,
+    pub image_base: u64,
+    pub entry_point: u64,
     pub instruction_limit: u64,
     pub trace_limit: usize,
     pub network_mode: String,
@@ -661,15 +670,15 @@ pub enum Termination {
     ReturnedFromEntryPoint,
     InstructionLimit,
     Halted,
-    UnsupportedInstruction { address: u32, instruction: String },
-    InvalidInstruction { address: u32 },
-    MemoryFault { address: u32, operation: String },
+    UnsupportedInstruction { address: u64, instruction: String },
+    InvalidInstruction { address: u64 },
+    MemoryFault { address: u64, operation: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstructionEvent {
     pub index: u64,
-    pub address: u32,
+    pub address: u64,
     pub bytes: String,
     pub text: String,
 }
@@ -681,7 +690,7 @@ pub struct ApiEvent {
     pub module: String,
     pub name: String,
     pub arguments: Vec<String>,
-    pub result: u32,
+    pub result: u64,
     pub summary: String,
 }
 
@@ -719,9 +728,16 @@ pub struct NetworkEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEvent {
     pub operation: String,
-    pub address: u32,
+    pub address: u64,
     pub size: u32,
     pub permissions: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeFunction {
+    pub begin_address: u64,
+    pub end_address: u64,
+    pub unwind_info_address: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

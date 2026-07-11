@@ -39,7 +39,7 @@ const progressLabels: Record<ProgressStage, string> = {
 }
 
 const dynamicProgressLabels: Record<DynamicProgressStage, string> = {
-  'loading-engine': 'Loading x86 interpreter',
+  'loading-engine': 'Loading x86/x64 interpreter',
   'loading-image': 'Mapping PE image',
   executing: 'Emulating instructions',
   finalizing: 'Preparing behavior report',
@@ -159,6 +159,19 @@ export default function App() {
       await inspectFile(new File([bytes], 'aegis-safe-dynamic-pe32.exe', { type: 'application/octet-stream' }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Safe fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
+  const analyzePe64Demo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-dynamic-pe64.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Safe PE64 fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Safe PE64 fixture could not be loaded')
       setStatus('error')
     }
   }, [inspectFile])
@@ -360,7 +373,7 @@ export default function App() {
             <div className="intro-copy">
               <p className="kicker">Browser-native binary analysis</p>
               <h1>Analyze binaries locally.</h1>
-              <p>Static inspection and bounded x86 emulation. Files stay in this browser and are never executed by the host.</p>
+              <p>Static inspection and bounded x86/x64 emulation. Files stay in this browser and are never executed by the host.</p>
             </div>
             <UploadPanel
               dragging={dragging}
@@ -368,6 +381,7 @@ export default function App() {
               inputRef={inputRef}
               inspectFile={inspectFile}
               analyzeDemo={analyzeDemo}
+              analyzePe64Demo={analyzePe64Demo}
               analyzeArtifactDemo={analyzeArtifactDemo}
               analyzeSehDemo={analyzeSehDemo}
               analyzeThreadsDemo={analyzeThreadsDemo}
@@ -441,12 +455,13 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
   inspectFile: (file: File) => Promise<void>
   analyzeDemo: () => Promise<void>
+  analyzePe64Demo: () => Promise<void>
   analyzeArtifactDemo: () => Promise<void>
   analyzeSehDemo: () => Promise<void>
   analyzeThreadsDemo: () => Promise<void>
@@ -474,6 +489,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
       <div className="button-row">
         <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
         <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzePe64Demo()}>Use safe PE64 demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeSehDemo()}>Use SEH demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeThreadsDemo()}>Use threads demo</button>
@@ -660,12 +676,13 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
   onScanArtifacts: () => void
 }) {
   const format = staticReport.format as Record<string, unknown>
-  const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'network' | 'provenance' | 'snapshots' | 'profiles'>('timeline')
+  const architecture = staticReport.sample.architecture ?? ''
+  const eligible = format.kind === 'pe' && ((format.bitness === 32 && architecture.includes('X86')) || (format.bitness === 64 && architecture.includes('X86_64')))
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'network' | 'provenance' | 'snapshots' | 'unwind' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
-    return <EmptyState title="Dynamic analysis is not available for this file" text="The current emulator supports PE32/x86 executables. Static analysis remains available for every supported format." />
+    return <EmptyState title="Dynamic analysis is not available for this file" text="The current emulator supports PE32/x86 and PE64/x86-64 executables. Static analysis remains available for every supported format." />
   }
   if (status === 'running') {
     return <div className="dynamic-start"><Spinner /><h2>{dynamicProgressLabels[stage]}</h2><p>Execution is isolated inside a dedicated worker with a 10-second watchdog.</p><button className="button secondary" type="button" onClick={onCancel}>Stop analysis</button></div>
@@ -677,7 +694,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
     return (
       <div className="dynamic-intro">
         <div>
-          <p className="kicker">PE32 / x86 interpreter</p>
+          <p className="kicker">PE32/x86 + PE64/x86-64 interpreter</p>
           <h2>Observe modeled behavior</h2>
           <p>Instructions run in a deterministic Rust interpreter. Windows APIs, files, registry keys, memory, and network operations are synthetic and never map to browser resources.</p>
           <ProfilePicker value={profileId} onChange={onSelectProfile} />
@@ -725,6 +742,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
         <button className={view === 'network' ? 'active' : ''} type="button" onClick={() => setView('network')}>Network ({report.network_exchanges.length})</button>
         <button className={view === 'provenance' ? 'active' : ''} type="button" onClick={() => setView('provenance')}>Provenance ({report.provenance_flows.length})</button>
         <button className={view === 'snapshots' ? 'active' : ''} type="button" onClick={() => setView('snapshots')}>Snapshots ({report.snapshots.length})</button>
+        <button className={view === 'unwind' ? 'active' : ''} type="button" onClick={() => setView('unwind')}>Unwind ({report.unwind_functions.length})</button>
         {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
@@ -740,13 +758,19 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
       {view === 'network' && <NetworkView report={report} />}
       {view === 'provenance' && <ProvenanceView report={report} />}
       {view === 'snapshots' && <SnapshotView report={report} />}
+      {view === 'unwind' && <UnwindView report={report} />}
       {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
 }
 
 function SnapshotView({ report }: { report: DynamicReport }) {
-  return <div className="generation-layout"><div className="stats-grid"><Stat label="Snapshots" value={report.snapshot_stats.count.toLocaleString()} detail={`${report.snapshot_stats.max_snapshots} maximum`} /><Stat label="Dirty-region cap" value={report.snapshot_stats.max_dirty_regions.toLocaleString()} detail={`${formatBytes(report.snapshot_stats.sampled_bytes_per_region)} sampled per region`} /><Stat label="Capture status" value={report.snapshot_stats.truncated ? 'Truncated' : 'Complete'} detail="Metadata and hashes only" /></div><Section title="Execution state snapshots" description="Entry, API-boundary, and final states contain registers, event counters, and a deterministic bounded memory fingerprint—never raw guest-memory dumps."><Table><thead><tr><th>#</th><th>Trigger</th><th>Instruction</th><th>Virtual time</th><th>EIP / EAX</th><th>Events</th><th>Dirty regions</th><th>State SHA-256</th></tr></thead><tbody>{report.snapshots.map((snapshot) => { const behavior = snapshot.events.processes + snapshot.events.filesystem + snapshot.events.registry + snapshot.events.network + snapshot.events.memory + snapshot.events.injection + snapshot.events.persistence; return <tr key={snapshot.sequence}><td>{snapshot.sequence + 1}</td><td><code className="strong-code">{snapshot.trigger}</code></td><td>{snapshot.instruction.toLocaleString()}</td><td>{snapshot.virtual_time_ms.toLocaleString()} ms</td><td><code>{formatOffset(snapshot.registers.eip)} / {formatOffset(snapshot.registers.eax)}</code></td><td>{snapshot.events.api_calls} API · {behavior} behavior · {snapshot.events.provenance_flows} flows</td><td>{snapshot.dirty_memory_regions}</td><td><code>{snapshot.state_sha256.slice(0, 16)}…</code></td></tr> })}</tbody></Table></Section></div>
+  return <div className="generation-layout"><div className="stats-grid"><Stat label="Snapshots" value={report.snapshot_stats.count.toLocaleString()} detail={`${report.snapshot_stats.max_snapshots} maximum`} /><Stat label="Dirty-region cap" value={report.snapshot_stats.max_dirty_regions.toLocaleString()} detail={`${formatBytes(report.snapshot_stats.sampled_bytes_per_region)} sampled per region`} /><Stat label="Capture status" value={report.snapshot_stats.truncated ? 'Truncated' : 'Complete'} detail="Metadata and hashes only" /></div><Section title="Execution state snapshots" description="Entry, API-boundary, and final states contain registers, event counters, and a deterministic bounded memory fingerprint—never raw guest-memory dumps."><Table><thead><tr><th>#</th><th>Trigger</th><th>Instruction</th><th>Virtual time</th><th>RIP / RAX</th><th>Events</th><th>Dirty regions</th><th>State SHA-256</th></tr></thead><tbody>{report.snapshots.map((snapshot) => { const behavior = snapshot.events.processes + snapshot.events.filesystem + snapshot.events.registry + snapshot.events.network + snapshot.events.memory + snapshot.events.injection + snapshot.events.persistence; return <tr key={snapshot.sequence}><td>{snapshot.sequence + 1}</td><td><code className="strong-code">{snapshot.trigger}</code></td><td>{snapshot.instruction.toLocaleString()}</td><td>{snapshot.virtual_time_ms.toLocaleString()} ms</td><td><code>{formatOffset(snapshot.registers.rip)} / {formatOffset(snapshot.registers.rax)}</code></td><td>{snapshot.events.api_calls} API · {behavior} behavior · {snapshot.events.provenance_flows} flows</td><td>{snapshot.dirty_memory_regions}</td><td><code>{snapshot.state_sha256.slice(0, 16)}…</code></td></tr> })}</tbody></Table></Section></div>
+}
+
+function UnwindView({ report }: { report: DynamicReport }) {
+  if (!report.unwind_functions.length) return <EmptyState title="No x64 unwind metadata" text="PE32 images do not use the PE64 runtime-function table, or this PE64 image did not provide one." />
+  return <Section title="PE64 unwind metadata" description="Bounded RUNTIME_FUNCTION entries from the exception directory support x64 stack and exception analysis."><Table><thead><tr><th>#</th><th>Function begin</th><th>Function end</th><th>Unwind info</th></tr></thead><tbody>{report.unwind_functions.map((entry, index) => <tr key={`${entry.begin_address}-${index}`}><td>{index + 1}</td><td><code>{formatOffset(entry.begin_address)}</code></td><td><code>{formatOffset(entry.end_address)}</code></td><td><code>{formatOffset(entry.unwind_info_address)}</code></td></tr>)}</tbody></Table></Section>
 }
 
 function ProvenanceView({ report }: { report: DynamicReport }) {

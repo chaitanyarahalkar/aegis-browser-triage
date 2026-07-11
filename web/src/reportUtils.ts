@@ -14,7 +14,7 @@ export function formatBytes(bytes: number): string {
 }
 
 export function formatOffset(value: number | null): string {
-  return value == null ? '—' : `0x${value.toString(16).padStart(8, '0')}`
+  return value == null ? '—' : `0x${value.toString(16).padStart(value > 0xffff_ffff ? 16 : 8, '0')}`
 }
 
 export function formatLabel(format: BinaryFormat): string {
@@ -48,4 +48,3 @@ function displayValue(value: unknown): string {
 function humanize(value: string): string {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase())
 }
-

@@ -69,7 +69,7 @@ impl ArtifactStore {
             entropy: entropy(captured),
             detected_format: detect_format(captured).into(),
             trigger: request.trigger.into(),
-            address: request.address,
+            address: request.address.map(u64::from),
             path: request.path,
             permissions: request.permissions,
             strings,
