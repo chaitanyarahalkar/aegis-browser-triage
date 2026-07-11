@@ -88,6 +88,37 @@ pub fn safe_dynamic_pe32() -> Vec<u8> {
     bytes
 }
 
+pub fn dynamic_resolution_pe32() -> Vec<u8> {
+    let mut bytes = safe_dynamic_pe32();
+    let code = [
+        0x68, 0x00, 0x11, 0x40, 0x00, // push "KERNEL32.dll"
+        0xff, 0x15, 0x60, 0x20, 0x40, 0x00, // call [LoadLibraryA]
+        0x68, 0x20, 0x11, 0x40, 0x00, // push "GetCurrentProcessId"
+        0x50, // push eax module handle
+        0xff, 0x15, 0x64, 0x20, 0x40, 0x00, // call [GetProcAddress]
+        0xff, 0xd0, // call eax dynamic stub
+        0x6a, 0x00, // push 0
+        0xff, 0x15, 0x68, 0x20, 0x40, 0x00, // call [ExitProcess]
+        0xcc,
+    ];
+    bytes[0x200..0x400].fill(0);
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+    write_c_string(&mut bytes, 0x300, b"KERNEL32.dll");
+    write_c_string(&mut bytes, 0x320, b"GetCurrentProcessId");
+
+    for (index, name_rva) in [0x20c8, 0x20d8, 0x20b4, 0].into_iter().enumerate() {
+        put_u32(&mut bytes, 0x440 + index * 4, name_rva);
+        put_u32(&mut bytes, 0x460 + index * 4, name_rva);
+    }
+    for index in 4..7 {
+        put_u32(&mut bytes, 0x440 + index * 4, 0);
+        put_u32(&mut bytes, 0x460 + index * 4, 0);
+    }
+    write_hint_name(&mut bytes, 0x4c8, b"LoadLibraryA");
+    write_hint_name(&mut bytes, 0x4d8, b"GetProcAddress");
+    bytes
+}
+
 fn write_section(bytes: &mut [u8], offset: usize, name: &[u8], layout: (u32, u32, u32, u32, u32)) {
     let (virtual_size, virtual_address, raw_size, raw_offset, characteristics) = layout;
     bytes[offset..offset + name.len().min(8)].copy_from_slice(&name[..name.len().min(8)]);

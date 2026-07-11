@@ -1,5 +1,6 @@
 use crate::{
     DynamicError,
+    api::signature,
     memory::{Memory, Permissions},
 };
 use goblin::pe;
@@ -24,6 +25,7 @@ pub struct LoadedImage {
     pub entry_point: u32,
     pub imports: BTreeMap<u32, ApiImport>,
     pub warnings: Vec<String>,
+    pub tls_callbacks: Vec<u32>,
 }
 
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, DynamicError> {
@@ -44,6 +46,13 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, DynamicError> {
         .ok_or_else(|| DynamicError::InvalidPe("entry point overflow".into()))?;
     let mut memory = Memory::default();
     let mut warnings = Vec::new();
+    if optional
+        .data_directories
+        .get_delay_import_descriptor()
+        .is_some()
+    {
+        warnings.push("delay-import table is present but not yet mapped".into());
+    }
 
     let header_size = (optional.windows_fields.size_of_headers as usize)
         .max(0x200)
@@ -101,14 +110,33 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, DynamicError> {
             .ok_or_else(|| DynamicError::InvalidPe("IAT address overflow".into()))?;
         memory.write_force(iat_address, &stub.to_le_bytes())?;
         let name = import.name.to_string();
+        if name.starts_with("ORDINAL ") {
+            warnings.push(format!(
+                "{}!{} uses an ordinal import with an unknown signature",
+                import.dll, name
+            ));
+        }
         imports.insert(
             stub,
             ApiImport {
-                argument_count: argument_count(&name),
+                argument_count: signature(&name).argument_count,
                 module: import.dll.to_owned(),
                 name,
             },
         );
+    }
+
+    let mut tls_callbacks = Vec::new();
+    if let Some(tls) = &pe.tls_data {
+        for callback in tls.callbacks.iter().copied().take(64) {
+            match u32::try_from(callback) {
+                Ok(callback) => tls_callbacks.push(callback),
+                Err(_) => warnings.push("TLS callback address does not fit PE32".into()),
+            }
+        }
+        if tls.callbacks.len() > 64 {
+            warnings.push("TLS callback list truncated at 64 entries".into());
+        }
     }
 
     Ok(LoadedImage {
@@ -117,24 +145,10 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, DynamicError> {
         entry_point,
         imports,
         warnings,
+        tls_callbacks,
     })
 }
 
 fn align_page(size: usize) -> usize {
     size.saturating_add(0xfff) & !0xfff
-}
-
-fn argument_count(name: &str) -> usize {
-    match name.to_ascii_lowercase().as_str() {
-        "gettickcount" | "getcurrentprocessid" | "getcurrentthreadid" => 0,
-        "exitprocess" | "sleep" | "getmodulehandlea" | "loadlibrarya" | "deletefilea"
-        | "closehandle" => 1,
-        "winexec" | "getprocaddress" | "virtualfree" => 2,
-        "virtualprotect" | "connect" => 3,
-        "virtualalloc" | "send" | "recv" => 4,
-        "regopenkeyexa" | "internetopena" | "writefile" => 5,
-        "regsetvalueexa" | "internetopenurla" => 6,
-        "createfilea" => 7,
-        _ => 0,
-    }
 }

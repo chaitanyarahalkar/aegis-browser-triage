@@ -138,10 +138,36 @@ export interface DynamicMemoryEvent {
   permissions: string
 }
 
+export interface DynamicInjectionEvent {
+  operation: string
+  process_handle: number
+  address: number
+  size: number
+  preview: string | null
+}
+
 export interface DynamicProcessEvent {
   operation: string
   command: string
   synthetic_result: string
+}
+
+export interface DynamicTimelineEvent {
+  sequence: number
+  instruction: number
+  virtual_time_ms: number
+  category: string
+  operation: string
+  subject: string
+  source_api: string
+}
+
+export interface DynamicCoverage {
+  unique_instruction_addresses: number
+  unique_api_names: number
+  modeled_api_calls: number
+  unmodeled_api_calls: number
+  dynamic_api_resolutions: number
 }
 
 export interface DynamicFinding {
@@ -185,6 +211,9 @@ export interface DynamicReport {
   registry: DynamicRegistryEvent[]
   network: DynamicNetworkEvent[]
   memory: DynamicMemoryEvent[]
+  injection: DynamicInjectionEvent[]
+  timeline: DynamicTimelineEvent[]
+  coverage: DynamicCoverage
   findings: DynamicFinding[]
   warnings: string[]
   truncated: boolean

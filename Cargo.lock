@@ -28,7 +28,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "analysis-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "goblin",
  "hex",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "analysis-dynamic"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "goblin",
  "hex",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "analysis-dynamic-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "analysis-dynamic",
  "serde_json",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "analysis-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "analysis-core",
  "serde_json",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "analysis-yara"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "serde",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "analysis-yara-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "analysis-yara",
  "serde_json",

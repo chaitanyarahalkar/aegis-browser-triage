@@ -169,6 +169,17 @@ impl Memory {
         String::from_utf8_lossy(&result).into_owned()
     }
 
+    pub fn read_wide_string(&self, address: u32, max: usize) -> String {
+        let mut result = Vec::new();
+        for index in 0..max {
+            match self.read_u16(address.wrapping_add((index * 2) as u32)) {
+                Ok(0) | Err(_) => break,
+                Ok(value) => result.push(value),
+            }
+        }
+        String::from_utf16_lossy(&result)
+    }
+
     pub fn set_permissions(
         &mut self,
         address: u32,
@@ -182,5 +193,18 @@ impl Memory {
             .ok_or(DynamicError::MemoryWrite { address })?;
         region.permissions = permissions;
         Ok(())
+    }
+
+    pub fn unmap(&mut self, address: u32) -> bool {
+        let Some(index) = self
+            .regions
+            .iter()
+            .position(|region| region.start == address)
+        else {
+            return false;
+        };
+        let region = self.regions.remove(index);
+        self.allocated = self.allocated.saturating_sub(region.data.len());
+        true
     }
 }

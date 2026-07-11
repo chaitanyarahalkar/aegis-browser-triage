@@ -273,7 +273,7 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        <span>Aegis 0.2</span>
+        <span>Aegis 0.3</span>
         <span>Static and emulated behavior are evidence, not a verdict.</span>
       </footer>
     </div>
@@ -461,7 +461,7 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'behavior' | 'api' | 'instructions'>('behavior')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage'>('timeline')
 
   if (!eligible) {
     return <EmptyState title="Dynamic analysis is not available for this file" text="The current emulator supports PE32/x86 executables. Static analysis remains available for every supported format." />
@@ -491,13 +491,13 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
     )
   }
 
-  const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length
+  const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length + report.injection.length
   return (
     <div className="dynamic-report">
       <div className="stats-grid four">
         <Stat label="Termination" value={terminationLabel(report.termination)} detail="Bounded execution" />
-        <Stat label="Instructions" value={report.instruction_count.toLocaleString()} detail={`${report.instructions.length.toLocaleString()} traced`} />
-        <Stat label="API calls" value={report.api_calls.length.toLocaleString()} detail={`${behaviorCount} behavior event${behaviorCount === 1 ? '' : 's'}`} />
+        <Stat label="Instructions" value={report.instruction_count.toLocaleString()} detail={`${report.coverage.unique_instruction_addresses.toLocaleString()} unique addresses`} />
+        <Stat label="API calls" value={report.api_calls.length.toLocaleString()} detail={`${report.coverage.modeled_api_calls} modeled · ${report.coverage.unmodeled_api_calls} fallback`} />
         <Stat label="Elapsed" value={`${report.elapsed_ms.toFixed(2)} ms`} detail="Dedicated worker" />
       </div>
       <div className="notice safe-notice"><strong>No guest operation left the browser.</strong><span>Network, filesystem, registry, time, process, and memory APIs were modeled locally.</span></div>
@@ -508,15 +508,34 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
       </Section>
       {report.warnings.length > 0 && <div className="notice warning-notice">{report.warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
       <div className="subtabs">
+        <button className={view === 'timeline' ? 'active' : ''} type="button" onClick={() => setView('timeline')}>Timeline ({report.timeline.length})</button>
         <button className={view === 'behavior' ? 'active' : ''} type="button" onClick={() => setView('behavior')}>Behavior ({behaviorCount})</button>
         <button className={view === 'api' ? 'active' : ''} type="button" onClick={() => setView('api')}>API calls ({report.api_calls.length})</button>
         <button className={view === 'instructions' ? 'active' : ''} type="button" onClick={() => setView('instructions')}>Instructions ({report.instructions.length})</button>
+        <button className={view === 'coverage' ? 'active' : ''} type="button" onClick={() => setView('coverage')}>Coverage</button>
       </div>
+      {view === 'timeline' && <TimelineView report={report} />}
       {view === 'behavior' && <BehaviorView report={report} />}
       {view === 'api' && <ApiView report={report} />}
       {view === 'instructions' && <InstructionView report={report} />}
+      {view === 'coverage' && <CoverageView report={report} />}
     </div>
   )
+}
+
+function TimelineView({ report }: { report: DynamicReport }) {
+  const [category, setCategory] = useState('all')
+  const categories = ['all', ...Array.from(new Set(report.timeline.map((event) => event.category)))]
+  const events = category === 'all' ? report.timeline : report.timeline.filter((event) => event.category === category)
+  if (report.timeline.length === 0) return <EmptyState title="No timeline events" text="Execution ended before reaching a modeled or fallback API." />
+  return <Section title="Execution timeline" description="Ordered synthetic activity; virtual timestamps never use the host clock."><div className="timeline-filters">{categories.map((value) => <button type="button" className={category === value ? 'active' : ''} key={value} onClick={() => setCategory(value)}>{value.charAt(0).toUpperCase() + value.slice(1)}</button>)}</div><Table><thead><tr><th>#</th><th>Virtual time</th><th>Category</th><th>Operation</th><th>Subject</th><th>Source API</th><th>Instruction</th></tr></thead><tbody>{events.map((event) => <tr key={event.sequence}><td>{event.sequence + 1}</td><td>{event.virtual_time_ms.toLocaleString()} ms</td><td><span className="tag">{event.category}</span></td><td>{event.operation}</td><td><code>{event.subject}</code></td><td><code className="strong-code">{event.source_api}</code></td><td>{event.instruction.toLocaleString()}</td></tr>)}</tbody></Table></Section>
+}
+
+function CoverageView({ report }: { report: DynamicReport }) {
+  const coverage = report.coverage
+  const total = coverage.modeled_api_calls + coverage.unmodeled_api_calls
+  const modeledPercent = total === 0 ? 100 : coverage.modeled_api_calls / total * 100
+  return <div className="coverage-layout"><div className="stats-grid"><Stat label="Unique code addresses" value={coverage.unique_instruction_addresses.toLocaleString()} detail={`${report.instruction_count.toLocaleString()} instructions executed`} /><Stat label="Unique APIs" value={coverage.unique_api_names.toLocaleString()} detail={`${coverage.dynamic_api_resolutions} dynamically resolved`} /><Stat label="Modeled API coverage" value={`${modeledPercent.toFixed(1)}%`} detail={`${coverage.unmodeled_api_calls} conservative fallbacks`} /></div><Section title="Interpretation limits" description="Coverage describes this emulation path, not every path in the binary."><dl className="limits-list"><div><dt>Trace records</dt><dd>{report.instructions.length.toLocaleString()}</dd></div><div><dt>Report truncated</dt><dd>{report.truncated ? 'Yes' : 'No'}</dd></div><div><dt>Termination</dt><dd>{terminationLabel(report.termination)}</dd></div><div><dt>Schema</dt><dd>Dynamic v{report.schema_version}</dd></div></dl></Section></div>
 }
 
 function BehaviorView({ report }: { report: DynamicReport }) {
@@ -526,6 +545,7 @@ function BehaviorView({ report }: { report: DynamicReport }) {
     ...report.filesystem.map((event) => ({ type: 'File', operation: event.operation, target: event.path, detail: event.preview ?? 'Virtual filesystem' })),
     ...report.registry.map((event) => ({ type: 'Registry', operation: event.operation, target: event.key, detail: event.value ?? 'Synthetic registry' })),
     ...report.memory.map((event) => ({ type: 'Memory', operation: event.operation, target: formatOffset(event.address), detail: `${formatBytes(event.size)} · ${event.permissions}` })),
+    ...report.injection.map((event) => ({ type: 'Injection', operation: event.operation, target: `process ${formatOffset(event.process_handle)} · ${formatOffset(event.address)}`, detail: `${formatBytes(event.size)}${event.preview ? ` · ${event.preview}` : ''}` })),
   ]
   if (rows.length === 0) return <EmptyState title="No high-level behavior events" text="The sample did not reach the currently modeled APIs." />
   return <Table><thead><tr><th>Type</th><th>Operation</th><th>Target</th><th>Result</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.type}-${index}`}><td><span className="tag">{row.type}</span></td><td>{row.operation}</td><td><code>{row.target}</code></td><td>{row.detail}</td></tr>)}</tbody></Table>

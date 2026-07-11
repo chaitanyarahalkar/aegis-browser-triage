@@ -54,7 +54,15 @@ Dynamic analysis:
 - Hard ceilings of 10,000,000 instructions, 5,000 traces, 100,000 API calls,
   and 256 MiB of mapped guest memory
 - Deterministic virtual time and synthetic handles
-- In-memory files, registry keys, network sink, process events, and mappings
+- In-memory files, registry keys, network sink, process events, mappings, and
+  synthetic remote-process address spaces
+- 4,096 live handles, 1 MiB per virtual file, and 16 MiB total virtual file data
+- A bounded synthetic PEB/TEB and process environment that reveal no host values
+- Dynamic symbol resolution creates emulator-owned API stubs only; resolved
+  addresses never refer to browser or host functions
+- TLS callbacks execute under the same instruction, time, memory, and worker limits
+- Remote allocation, process writes, and thread creation are correlated as report
+  events but never target or create a host process
 - Unsupported instructions and invalid reads, writes, or execution become
   structured termination reasons
 

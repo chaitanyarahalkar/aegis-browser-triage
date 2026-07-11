@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 1;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 2;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -56,9 +56,41 @@ pub struct DynamicReport {
     pub registry: Vec<RegistryEvent>,
     pub network: Vec<NetworkEvent>,
     pub memory: Vec<MemoryEvent>,
+    pub injection: Vec<InjectionEvent>,
+    pub timeline: Vec<TimelineEvent>,
+    pub coverage: ExecutionCoverage,
     pub findings: Vec<DynamicFinding>,
     pub warnings: Vec<String>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InjectionEvent {
+    pub operation: String,
+    pub process_handle: u32,
+    pub address: u32,
+    pub size: u32,
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineEvent {
+    pub sequence: u64,
+    pub instruction: u64,
+    pub virtual_time_ms: u64,
+    pub category: String,
+    pub operation: String,
+    pub subject: String,
+    pub source_api: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionCoverage {
+    pub unique_instruction_addresses: usize,
+    pub unique_api_names: usize,
+    pub modeled_api_calls: usize,
+    pub unmodeled_api_calls: usize,
+    pub dynamic_api_resolutions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

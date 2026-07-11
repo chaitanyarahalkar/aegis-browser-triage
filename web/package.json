@@ -1,7 +1,7 @@
 {
   "name": "aegis-browser-triage",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "wasm:static": "wasm-pack build ../crates/analysis-wasm --target web --out-dir ../../web/src/generated/analysis-wasm --out-name analyzer",

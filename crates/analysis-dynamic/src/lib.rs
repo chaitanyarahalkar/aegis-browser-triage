@@ -1,3 +1,4 @@
+mod api;
 mod cpu;
 mod engine;
 #[cfg(any(test, feature = "fixtures"))]
@@ -5,6 +6,7 @@ pub mod fixture;
 mod loader;
 mod memory;
 mod model;
+mod windows;
 
 pub use model::*;
 
@@ -90,6 +92,12 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
+        assert_eq!(report.schema_version, 2);
+        assert_eq!(report.timeline.len(), report.api_calls.len());
+        assert_eq!(report.timeline[2].category, "process");
+        assert_eq!(report.coverage.modeled_api_calls, 4);
+        assert_eq!(report.coverage.unmodeled_api_calls, 0);
+        assert!(report.coverage.unique_instruction_addresses >= 8);
     }
 
     #[test]
@@ -100,6 +108,37 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&first).unwrap(),
             serde_json::to_string(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn executes_a_dynamically_resolved_api() {
+        let bytes = fixture::dynamic_resolution_pe32();
+        let report =
+            analyze_dynamic("dynamic-api.exe", &bytes, &DynamicOptions::default()).unwrap();
+        assert!(matches!(
+            report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert_eq!(report.coverage.dynamic_api_resolutions, 1);
+        assert_eq!(
+            report
+                .api_calls
+                .iter()
+                .map(|event| event.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "LoadLibraryA",
+                "GetProcAddress",
+                "GetCurrentProcessId",
+                "ExitProcess"
+            ]
+        );
+        assert!(
+            report
+                .timeline
+                .iter()
+                .any(|event| event.subject.contains("Resolved dynamic symbol"))
         );
     }
 

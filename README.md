@@ -23,10 +23,16 @@ Static reports include:
 
 Dynamic reports currently include:
 
-- PE32/x86 image loading, import resolution, stack, and guest memory
+- PE32/x86 image loading, TLS callbacks, imports, dynamic API resolution, a
+  minimal PEB/TEB, stack, and guest memory
 - Bounded instruction traces and termination reasons
-- Modeled Windows API calls and deterministic virtual time
-- Synthetic process, filesystem, registry, network, and memory events
+- Expanded integer, conditional, flag, loop, and repeated string instructions
+- Typed Windows API signatures, ANSI/UTF-16 arguments, and deterministic virtual time
+- Stateful synthetic handles, files, registry values, processes, DNS, sockets,
+  HTTP sessions, heaps, environment, and memory
+- Ordered behavior timeline and execution/API coverage metrics
+- Correlated process-injection primitives such as remote allocation, writes,
+  protection changes, remote threads, and APCs
 - Explainable findings derived from observed behavior
 
 YARA analysis includes:

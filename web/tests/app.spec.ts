@@ -35,6 +35,10 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
 
   await runDynamic(page)
   await expect(page.getByText('Process execution requested')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Execution timeline' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'WinExec', exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'process', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: /^Behavior/ }).click()
   await expect(page.getByRole('cell', { name: 'powershell.exe -NoProfile https://example.test 10.20.30.40', exact: true })).toBeVisible()
   await expect(page.getByText('Captured only; no host process created')).toBeVisible()
   await expect(page.getByText('No guest operation left the browser.')).toBeVisible()
@@ -45,6 +49,9 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   }
   await page.getByRole('button', { name: /^Instructions/ }).click()
   await expect(page.locator('tbody')).toContainText('call dword ptr')
+  await page.getByRole('button', { name: 'Coverage' }).click()
+  await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v2', { exact: true })).toBeVisible()
 })
 
 test('bounds an infinite loop by instruction count', async ({ page, isMobile }) => {
@@ -118,6 +125,9 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
+  expect(json.dynamic.schema_version).toBe(2)
+  expect(json.dynamic.timeline).toHaveLength(4)
+  expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
   expect(json.yara.matches[0].identifier).toBe('Aegis_Safe_Demo')
   expect(JSON.stringify(json.yara)).not.toContain('powershell.exe -NoProfile https://example.test 10.20.30.40')
