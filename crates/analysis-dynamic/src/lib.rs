@@ -8,6 +8,7 @@ mod generation;
 mod loader;
 mod memory;
 mod model;
+mod network;
 mod windows;
 
 pub use model::*;
@@ -121,7 +122,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 9);
+        assert_eq!(report.schema_version, 10);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -355,6 +356,44 @@ mod tests {
                 .findings
                 .iter()
                 .any(|finding| finding.id == "system-objects")
+        );
+    }
+
+    #[test]
+    fn runs_scripted_network_download_fixture() {
+        let analysis = analyze_dynamic_with_artifacts(
+            "network.exe",
+            &fixture::network_scenario_pe32(),
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            analysis.report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert_eq!(analysis.report.network_exchanges.len(), 2);
+        assert_eq!(
+            analysis.report.network_exchanges[0].response_status,
+            Some(302)
+        );
+        assert_eq!(analysis.report.network_exchanges[0].request_size, 0);
+        assert_eq!(analysis.report.network_exchanges[1].response_size, 31);
+        assert_eq!(
+            analysis.report.network_exchanges[1]
+                .response_sha256
+                .as_deref()
+                .map(str::len),
+            Some(64)
+        );
+        let download = analysis
+            .report
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ArtifactKind::NetworkDownload)
+            .unwrap();
+        assert_eq!(
+            analysis.artifact_bytes(&download.id).unwrap(),
+            b"MZ AEGIS_SAFE_NETWORK_DOWNLOAD\0"
         );
     }
 

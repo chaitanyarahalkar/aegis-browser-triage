@@ -228,6 +228,19 @@ export default function App() {
     }
   }, [inspectFile])
 
+  const analyzeNetworkDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-network-pe32.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Network fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Network fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
   const runDynamicAnalysis = useCallback(async () => {
     if (!currentFile) return
     const run = ++dynamicRun.current
@@ -360,6 +373,7 @@ export default function App() {
               analyzeThreadsDemo={analyzeThreadsDemo}
               analyzeInstructionsDemo={analyzeInstructionsDemo}
               analyzeSystemDemo={analyzeSystemDemo}
+              analyzeNetworkDemo={analyzeNetworkDemo}
             />
             <div className="privacy-row">
               <span>No uploads</span>
@@ -427,7 +441,7 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
@@ -438,6 +452,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
   analyzeThreadsDemo: () => Promise<void>
   analyzeInstructionsDemo: () => Promise<void>
   analyzeSystemDemo: () => Promise<void>
+  analyzeNetworkDemo: () => Promise<void>
 }) {
   return (
     <div
@@ -464,6 +479,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button secondary" type="button" onClick={() => void analyzeThreadsDemo()}>Use threads demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeInstructionsDemo()}>Use instruction demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeSystemDemo()}>Use system-object demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzeNetworkDemo()}>Use network demo</button>
       </div>
       <input
         ref={inputRef}
@@ -645,7 +661,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'profiles'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'network' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
@@ -706,6 +722,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
         <button className={view === 'exceptions' ? 'active' : ''} type="button" onClick={() => setView('exceptions')}>Exceptions ({report.exceptions.length})</button>
         <button className={view === 'threads' ? 'active' : ''} type="button" onClick={() => setView('threads')}>Threads ({report.threads.length})</button>
         <button className={view === 'system' ? 'active' : ''} type="button" onClick={() => setView('system')}>System objects ({report.system.length})</button>
+        <button className={view === 'network' ? 'active' : ''} type="button" onClick={() => setView('network')}>Network ({report.network_exchanges.length})</button>
         {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
@@ -718,9 +735,19 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
       {view === 'exceptions' && <ExceptionView report={report} />}
       {view === 'threads' && <ThreadView report={report} />}
       {view === 'system' && <SystemView report={report} />}
+      {view === 'network' && <NetworkView report={report} />}
       {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
+}
+
+function NetworkView({ report }: { report: DynamicReport }) {
+  const exportPcap = () => {
+    const payload = { schema: 'aegis-synthetic-pcap-v1', sample_sha256: report.sample_sha256, scenario: report.profile.network_scenario, exchanges: report.network_exchanges }
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${report.sample_sha256.slice(0, 12)}.synthetic-pcap.json`; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+  if (!report.network_exchanges.length) return <EmptyState title="No scripted network exchanges" text="The sample did not complete a modeled HTTP or socket exchange." />
+  return <div className="generation-layout"><div className="artifact-actions"><div><strong>{report.network_exchanges.length} deterministic exchanges</strong><span>Scenario {report.profile.network_scenario} · no host network access</span></div><button className="button secondary compact" type="button" onClick={exportPcap}>Export synthetic PCAP JSON</button></div><Section title="Scripted network exchanges" description="Redirects, request metadata, response status, and downloaded-artifact links are preserved without raw report bytes."><Table><thead><tr><th>#</th><th>Protocol</th><th>Operation</th><th>Destination</th><th>Response</th><th>Size</th><th>Outcome</th><th>Artifact</th></tr></thead><tbody>{report.network_exchanges.map((exchange) => <tr key={exchange.sequence}><td>{exchange.sequence + 1}</td><td><span className="tag">{exchange.protocol}</span></td><td>{exchange.operation}</td><td><code>{exchange.destination}</code></td><td>{exchange.response_status ?? '—'}</td><td>{formatBytes(exchange.response_size)}</td><td>{exchange.outcome}</td><td><code>{exchange.artifact_id ? `${exchange.artifact_id.slice(0, 12)}…` : '—'}</code></td></tr>)}</tbody></Table></Section></div>
 }
 
 function SystemView({ report }: { report: DynamicReport }) {
@@ -782,7 +809,7 @@ function ArtifactsView({ report, client, yara, status, error, onScan, onTimeline
   if (!report.artifacts.length) return <EmptyState title="No runtime artifacts captured" text="No written memory or virtual files met the bounded capture policy." />
   const yaraFor = (id: string) => yara.find((result) => result.artifact_id === id)
   return <div className="artifact-layout">
-    <div className="artifact-actions"><div className="timeline-filters">{['all', 'memory', 'virtual_file', 'remote_memory', 'configuration'].map((value) => <button type="button" className={kind === value ? 'active' : ''} key={value} onClick={() => setKind(value)}>{value.replaceAll('_', ' ')}</button>)}</div><button className="button primary compact" type="button" disabled={status === 'running'} onClick={onScan}>{status === 'running' ? 'Scanning artifacts…' : 'Scan artifacts with YARA'}</button></div>
+    <div className="artifact-actions"><div className="timeline-filters">{['all', 'memory', 'virtual_file', 'remote_memory', 'configuration', 'network_download'].map((value) => <button type="button" className={kind === value ? 'active' : ''} key={value} onClick={() => setKind(value)}>{value.replaceAll('_', ' ')}</button>)}</div><button className="button primary compact" type="button" disabled={status === 'running'} onClick={onScan}>{status === 'running' ? 'Scanning artifacts…' : 'Scan artifacts with YARA'}</button></div>
     {error && <div className="notice error-notice yara-error" role="alert"><div><strong>Artifact YARA stopped</strong><span>{error}</span></div></div>}
     <div className="artifact-grid"><Section title="Captured artifacts" description={`${report.artifact_stats.count} unique artifacts · ${formatBytes(report.artifact_stats.retained_bytes)} retained in the worker.`}><Table><thead><tr><th>Name</th><th>Kind</th><th>Format</th><th>Size</th><th>Entropy</th><th>YARA</th></tr></thead><tbody>{artifacts.map((artifact) => { const result = yaraFor(artifact.id); return <tr className={selected?.id === artifact.id ? 'selected-row' : ''} key={artifact.id} onClick={() => { setSelectedId(artifact.id); setOffset(0) }}><td><code className="strong-code">{artifact.name}</code></td><td><span className="tag">{artifact.kind}</span></td><td>{artifact.detected_format}</td><td>{formatBytes(artifact.captured_size)}</td><td>{artifact.entropy.toFixed(2)}</td><td>{result?.error ? 'Error' : result ? `${result.report?.matches.length ?? 0} matches` : 'Not scanned'}</td></tr> })}</tbody></Table></Section>
       {selected && <Section title={selected.name} description={`${selected.sha256.slice(0, 20)}… · ${selected.trigger}`}><div className="artifact-detail"><dl className="limits-list"><div><dt>Kind</dt><dd>{selected.kind}</dd></div><div><dt>Format</dt><dd>{selected.detected_format}</dd></div><div><dt>Permissions</dt><dd>{selected.permissions ?? '—'}</dd></div><div><dt>Captured</dt><dd>{formatBytes(selected.captured_size)}</dd></div></dl><div className="button-row"><button className="button secondary compact" type="button" onClick={() => setExportTarget(selected.id)}>Export raw bytes</button>{selected.origins[0]?.timeline_sequence != null && <button className="button secondary compact" type="button" onClick={() => onTimeline(selected.origins[0].timeline_sequence!)}>View timeline origin</button>}</div>{readError ? <div className="notice warning-notice">{readError}</div> : <ArtifactHex bytes={bytes} offset={offset} total={selected.captured_size} onOffset={setOffset} />}<h3>Strings and indicators</h3><div className="artifact-strings">{selected.indicators.map((indicator) => <code key={`${indicator.offset}-${indicator.value}`}>{indicator.kind}: {indicator.value}</code>)}{selected.strings.slice(0, 24).map((item) => <code key={`${item.offset}-${item.value}`}>{formatOffset(item.offset)} {item.value}</code>)}</div>{yaraFor(selected.id)?.report && <div className="notice safe-notice"><strong>{yaraFor(selected.id)!.report!.matches.length} YARA rule matches.</strong><span>{yaraFor(selected.id)!.report!.matches.map((match) => match.identifier).join(', ') || 'No rules matched.'}</span></div>}</div></Section>}

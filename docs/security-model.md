@@ -67,6 +67,10 @@ Dynamic analysis:
 - Kernel objects, enumeration snapshots, restricted tokens, shared mappings, named
   pipes, resources, and crypto providers are synthetic handles under the same limit
 - Crypto hash input is capped at 4 MiB per handle; it never invokes host key stores
+- Network scenarios are limited to 32 DNS, 32 HTTP, and 32 socket entries, 1 MiB
+  per response, 4 MiB total response bytes, 64 headers, and three redirect hops
+- Scripted downloads enter the existing 4 MiB artifact boundary; reports and
+  synthetic-PCAP JSON contain metadata and previews, never response body bytes
 - 4 MiB per synthetic remote-memory region and 16 MiB total remote-process memory
 - A bounded synthetic PEB/TEB and process environment that reveal no host values
 - Guest SEH chains dispatch at most 16 handlers per exception and retain at most 128

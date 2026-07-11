@@ -35,6 +35,8 @@ Dynamic reports currently include:
   HTTP sessions, heaps, environment, and memory
 - Stateful mutexes/events and waits, file/process enumeration, restricted tokens,
   shared mappings, named pipes, resources, and bounded SHA-256 crypto handles
+- Scripted DNS, TCP, WinINet, and WinHTTP responses with bounded redirects, typed
+  exchanges, downloaded artifacts, YARA scanning, and synthetic-PCAP JSON export
 - Ordered behavior timeline and execution/API coverage metrics
 - Four deterministic Windows environment profiles with selectable single runs and
   a bounded profile-matrix comparison for environment-sensitive behavior

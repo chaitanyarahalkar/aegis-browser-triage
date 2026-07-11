@@ -2,15 +2,16 @@ use crate::{
     ApiEvent, ArtifactKind, ArtifactOrigin, DynamicAnalysis, DynamicError, DynamicFinding,
     DynamicOptions, DynamicReport, DynamicSeverity, ExceptionEvent, ExecutionCoverage,
     ExecutionDiagnostics, ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent,
-    InstructionDiagnostic, InstructionEvent, MemoryEvent, NetworkEvent, NetworkMode,
-    PersistenceEvent, ProcessEvent, RegistryEvent, SystemEvent, Termination, ThreadEvent,
-    ThreadSummary, TimelineEvent,
+    InstructionDiagnostic, InstructionEvent, MemoryEvent, NetworkEvent, NetworkExchange,
+    NetworkHeader, NetworkMode, PersistenceEvent, ProcessEvent, RegistryEvent, SystemEvent,
+    Termination, ThreadEvent, ThreadSummary, TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
     cpu::Cpu,
     generation::{GenerationObservation, GenerationTracker},
     loader::{self, ApiImport, STACK_TOP},
     memory::{Memory, Permissions},
+    network::NetworkRuntime,
     windows::{HandleResource, VirtualWindows},
 };
 use iced_x86::{Code, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind};
@@ -46,6 +47,7 @@ pub(crate) fn run(
     options: DynamicOptions,
 ) -> Result<DynamicAnalysis, DynamicError> {
     let environment = options.environment.clone();
+    let network_scenario = options.network_scenario.clone();
     let mut loaded = loader::load(bytes)?;
     loaded.memory.map(
         PROCESS_ENV_BASE,
@@ -95,6 +97,7 @@ pub(crate) fn run(
         trace_limit: options.max_trace_events,
         network_mode: environment.network_mode.description().into(),
         environment: environment.clone(),
+        network_scenario: network_scenario.id.clone(),
     };
     let main_cpu = Cpu {
         eip: loaded.entry_point,
@@ -116,6 +119,7 @@ pub(crate) fn run(
         filesystem: Vec::new(),
         registry: Vec::new(),
         network: Vec::new(),
+        network_exchanges: Vec::new(),
         memory_events: Vec::new(),
         injection: Vec::new(),
         persistence: Vec::new(),
@@ -156,6 +160,7 @@ pub(crate) fn run(
         next_thread_switch: THREAD_QUANTUM,
         first_unsupported: None,
         invalid_instruction_count: 0,
+        network_runtime: NetworkRuntime::new(network_scenario),
     };
     machine.start_execution()?;
     machine.execute();
@@ -224,6 +229,7 @@ pub(crate) fn run(
         filesystem: machine.filesystem,
         registry: machine.registry,
         network: machine.network,
+        network_exchanges: machine.network_exchanges,
         memory: machine.memory_events,
         injection: machine.injection,
         persistence: machine.persistence,
@@ -274,6 +280,7 @@ struct Machine {
     filesystem: Vec<FileEvent>,
     registry: Vec<RegistryEvent>,
     network: Vec<NetworkEvent>,
+    network_exchanges: Vec<NetworkExchange>,
     memory_events: Vec<MemoryEvent>,
     injection: Vec<InjectionEvent>,
     persistence: Vec<PersistenceEvent>,
@@ -306,6 +313,7 @@ struct Machine {
     next_thread_switch: u64,
     first_unsupported: Option<InstructionDiagnostic>,
     invalid_instruction_count: usize,
+    network_runtime: NetworkRuntime,
 }
 
 #[derive(Clone)]
@@ -2352,6 +2360,7 @@ impl Machine {
                         name: library.clone(),
                     })
                     .unwrap_or(0);
+                self.network_runtime.register_session(handle);
                 Ok((handle, format!("Modeled loading {library}"), vec![library]))
             }
             "getprocaddress" => {
@@ -3397,17 +3406,6 @@ impl Machine {
                     self.memory.read_c_string(pointer, 2_048)
                 };
                 let offline = self.environment.network_mode == NetworkMode::Offline;
-                self.network.push(NetworkEvent {
-                    operation: "http_open".into(),
-                    destination: url.clone(),
-                    size: None,
-                    preview: None,
-                    synthetic_result: if offline {
-                        "offline profile rejected request".into()
-                    } else {
-                        "HTTP 404 from local sink".into()
-                    },
-                });
                 if offline {
                     return Ok((
                         0,
@@ -3419,7 +3417,195 @@ impl Machine {
                     .windows
                     .allocate(HandleResource::Internet { label: url.clone() })
                     .unwrap_or(0);
+                self.network_runtime
+                    .register_request(handle, "GET".into(), url.clone());
+                let _ = self.resolve_http_request(handle, "wininet");
                 Ok((handle, format!("Captured HTTP request to {url}"), vec![url]))
+            }
+            "internetreadfile" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let output = args.get(1).copied().unwrap_or(0);
+                let maximum = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let written = args.get(3).copied().unwrap_or(0);
+                let bytes = self
+                    .network_runtime
+                    .read_response(handle, maximum)
+                    .unwrap_or_default();
+                if output != 0 {
+                    let _ = self.memory.write(output, &bytes);
+                }
+                if written != 0 {
+                    let _ = self.memory.write_u32(written, bytes.len() as u32);
+                }
+                Ok((
+                    1,
+                    format!("Read {} scripted HTTP bytes", bytes.len()),
+                    vec![format!("0x{handle:08x}"), bytes.len().to_string()],
+                ))
+            }
+            "httpqueryinfoa" | "httpqueryinfow" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let output = args.get(2).copied().unwrap_or(0);
+                let length = args.get(3).copied().unwrap_or(0);
+                let status = self.network_runtime.response_status(handle).unwrap_or(0);
+                let value = status.to_string();
+                let written = self.write_guest_string(
+                    output,
+                    self.memory.read_u32(length).unwrap_or(16) as usize,
+                    &value,
+                    name.ends_with('w'),
+                );
+                if length != 0 {
+                    let _ = self.memory.write_u32(length, written as u32);
+                }
+                Ok((
+                    u32::from(status != 0),
+                    format!("Returned HTTP status {status}"),
+                    vec![status.to_string()],
+                ))
+            }
+            "winhttpopen" => {
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Internet {
+                        label: "WinHTTP session".into(),
+                    })
+                    .unwrap_or(0);
+                self.network_runtime.register_session(handle);
+                Ok((
+                    handle,
+                    "Created synthetic WinHTTP session".into(),
+                    hex_args(),
+                ))
+            }
+            "winhttpconnect" => {
+                let host = self
+                    .memory
+                    .read_wide_string(args.get(1).copied().unwrap_or(0), 512);
+                let port = args.get(2).copied().unwrap_or(80) as u16;
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Internet {
+                        label: host.clone(),
+                    })
+                    .unwrap_or(0);
+                self.network_runtime
+                    .register_connection(handle, host.clone(), port);
+                Ok((
+                    handle,
+                    format!("Created synthetic WinHTTP connection to {host}:{port}"),
+                    vec![host, port.to_string()],
+                ))
+            }
+            "winhttpopenrequest" => {
+                let connection = args.first().copied().unwrap_or(0);
+                let method = self
+                    .memory
+                    .read_wide_string(args.get(1).copied().unwrap_or(0), 32);
+                let path = self
+                    .memory
+                    .read_wide_string(args.get(2).copied().unwrap_or(0), 2048);
+                let url = self
+                    .network_runtime
+                    .connection_url(connection, &path)
+                    .unwrap_or(path);
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Internet { label: url.clone() })
+                    .unwrap_or(0);
+                self.network_runtime.register_request(
+                    handle,
+                    if method.is_empty() {
+                        "GET".into()
+                    } else {
+                        method.clone()
+                    },
+                    url.clone(),
+                );
+                Ok((
+                    handle,
+                    format!("Opened synthetic WinHTTP request {url}"),
+                    vec![method, url],
+                ))
+            }
+            "winhttpsendrequest" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let header_pointer = args.get(1).copied().unwrap_or(0);
+                let header_length = args.get(2).copied().unwrap_or(0).min(65_536) as usize;
+                let headers = if header_pointer == 0 {
+                    Vec::new()
+                } else {
+                    self.parse_headers(
+                        &self
+                            .memory
+                            .read_wide_string(header_pointer, header_length / 2),
+                    )
+                };
+                let body_pointer = args.get(3).copied().unwrap_or(0);
+                let body_length = args.get(4).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let body = self
+                    .memory
+                    .read(body_pointer, body_length)
+                    .unwrap_or_default()
+                    .to_vec();
+                self.network_runtime.set_request(handle, headers, body);
+                Ok((
+                    1,
+                    "Captured synthetic WinHTTP request data".into(),
+                    hex_args(),
+                ))
+            }
+            "winhttpreceiveresponse" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let ok = self.environment.network_mode != NetworkMode::Offline
+                    && self.resolve_http_request(handle, "winhttp");
+                Ok((
+                    u32::from(ok),
+                    "Resolved scripted WinHTTP response".into(),
+                    hex_args(),
+                ))
+            }
+            "winhttpreaddata" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let output = args.get(1).copied().unwrap_or(0);
+                let maximum = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let written = args.get(3).copied().unwrap_or(0);
+                let bytes = self
+                    .network_runtime
+                    .read_response(handle, maximum)
+                    .unwrap_or_default();
+                if output != 0 {
+                    let _ = self.memory.write(output, &bytes);
+                }
+                if written != 0 {
+                    let _ = self.memory.write_u32(written, bytes.len() as u32);
+                }
+                Ok((
+                    1,
+                    format!("Read {} scripted WinHTTP bytes", bytes.len()),
+                    hex_args(),
+                ))
+            }
+            "winhttpqueryheaders" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let output = args.get(3).copied().unwrap_or(0);
+                let length = args.get(4).copied().unwrap_or(0);
+                let status = self.network_runtime.response_status(handle).unwrap_or(0);
+                let value = status.to_string();
+                let written = self.write_guest_string(
+                    output,
+                    self.memory.read_u32(length).unwrap_or(16) as usize,
+                    &value,
+                    true,
+                );
+                if length != 0 {
+                    let _ = self.memory.write_u32(length, written as u32);
+                }
+                Ok((
+                    u32::from(status != 0),
+                    format!("Returned WinHTTP status {status}"),
+                    vec![status.to_string()],
+                ))
             }
             "wsastartup" => {
                 if let Some(pointer) = args.get(1).copied().filter(|pointer| *pointer != 0) {
@@ -3437,6 +3623,7 @@ impl Machine {
                         label: "winsock socket".into(),
                     })
                     .unwrap_or(u32::MAX);
+                self.network_runtime.register_socket(handle);
                 Ok((
                     handle,
                     "Created synthetic network socket".into(),
@@ -3445,6 +3632,7 @@ impl Machine {
             }
             "closesocket" => {
                 let handle = args.first().copied().unwrap_or(0);
+                self.network_runtime.close(handle);
                 let closed = self.windows.close(handle);
                 Ok((
                     if closed { 0 } else { u32::MAX },
@@ -3470,6 +3658,13 @@ impl Machine {
                         vec![query],
                     ));
                 }
+                let ip = self.network_runtime.resolve_dns(&query).unwrap_or(
+                    if self.environment.network_mode == NetworkMode::Sinkhole {
+                        [127, 0, 0, 1]
+                    } else {
+                        [10, 20, 30, 40]
+                    },
+                );
                 let name_address = NETWORK_RESULT_BASE + 0x40;
                 let ip_address = NETWORK_RESULT_BASE + 0x80;
                 let list_address = NETWORK_RESULT_BASE + 0x90;
@@ -3477,7 +3672,7 @@ impl Machine {
                 let _ = self
                     .memory
                     .write(name_address, &[query.as_bytes(), &[0]].concat());
-                let _ = self.memory.write(ip_address, &[10, 20, 30, 40]);
+                let _ = self.memory.write(ip_address, &ip);
                 let _ = self.memory.write_u32(list_address, ip_address);
                 let _ = self.memory.write_u32(list_address + 4, 0);
                 let _ = self.memory.write_u32(aliases_address, 0);
@@ -3495,11 +3690,17 @@ impl Machine {
                     destination: query.clone(),
                     size: None,
                     preview: None,
-                    synthetic_result: "10.20.30.40 from local resolver".into(),
+                    synthetic_result: format!(
+                        "{}.{}.{}.{} from scenario resolver",
+                        ip[0], ip[1], ip[2], ip[3]
+                    ),
                 });
                 Ok((
                     NETWORK_RESULT_BASE,
-                    format!("Resolved {query} to synthetic address 10.20.30.40"),
+                    format!(
+                        "Resolved {query} to synthetic address {}.{}.{}.{}",
+                        ip[0], ip[1], ip[2], ip[3]
+                    ),
                     vec![query],
                 ))
             }
@@ -3524,6 +3725,13 @@ impl Machine {
                         vec![query],
                     ));
                 }
+                let ip = self.network_runtime.resolve_dns(&query).unwrap_or(
+                    if self.environment.network_mode == NetworkMode::Sinkhole {
+                        [127, 0, 0, 1]
+                    } else {
+                        [10, 20, 30, 40]
+                    },
+                );
                 let result_address = NETWORK_RESULT_BASE + 0x100;
                 let socket_address = NETWORK_RESULT_BASE + 0x140;
                 let mut info = [0u8; 32];
@@ -3535,7 +3743,7 @@ impl Machine {
                 let _ = self.memory.write(result_address, &info);
                 let mut sockaddr = [0u8; 16];
                 sockaddr[0..2].copy_from_slice(&2u16.to_le_bytes());
-                sockaddr[4..8].copy_from_slice(&[10, 20, 30, 40]);
+                sockaddr[4..8].copy_from_slice(&ip);
                 let _ = self.memory.write(socket_address, &sockaddr);
                 if let Some(output) = args.get(3).copied().filter(|pointer| *pointer != 0) {
                     let _ = self.memory.write_u32(output, result_address);
@@ -3545,11 +3753,17 @@ impl Machine {
                     destination: query.clone(),
                     size: None,
                     preview: None,
-                    synthetic_result: "10.20.30.40 from local resolver".into(),
+                    synthetic_result: format!(
+                        "{}.{}.{}.{} from scenario resolver",
+                        ip[0], ip[1], ip[2], ip[3]
+                    ),
                 });
                 Ok((
                     0,
-                    format!("Resolved {query} to synthetic address 10.20.30.40"),
+                    format!(
+                        "Resolved {query} to synthetic address {}.{}.{}.{}",
+                        ip[0], ip[1], ip[2], ip[3]
+                    ),
                     vec![query],
                 ))
             }
@@ -3560,6 +3774,7 @@ impl Machine {
             )),
             "connect" => {
                 let destination = self.read_sockaddr(args.get(1).copied().unwrap_or(0));
+                let socket = args.first().copied().unwrap_or(0);
                 let offline = self.environment.network_mode == NetworkMode::Offline;
                 self.network.push(NetworkEvent {
                     operation: "connect".into(),
@@ -3572,6 +3787,10 @@ impl Machine {
                         "connected to local sink".into()
                     },
                 });
+                if !offline {
+                    self.network_runtime
+                        .connect_socket(socket, destination.clone());
+                }
                 Ok((
                     if offline { u32::MAX } else { 0 },
                     if offline {
@@ -3589,16 +3808,41 @@ impl Machine {
                     .read(args.get(1).copied().unwrap_or(0), length as usize)
                     .unwrap_or_default();
                 let preview = printable_preview(data);
+                let socket = args.first().copied().unwrap_or(0);
+                let destination = self
+                    .network_runtime
+                    .socket_destination(socket)
+                    .unwrap_or_else(|| format!("socket:0x{socket:x}"));
                 let offline = self.environment.network_mode == NetworkMode::Offline;
                 self.network.push(NetworkEvent {
                     operation: "send".into(),
-                    destination: format!("socket:0x{:x}", args.first().copied().unwrap_or(0)),
+                    destination: destination.clone(),
                     size: Some(length),
                     preview: Some(preview.clone()),
                     synthetic_result: if offline {
                         "offline profile rejected send".into()
                     } else {
                         "accepted by local sink".into()
+                    },
+                });
+                self.network_exchanges.push(NetworkExchange {
+                    sequence: self.network_exchanges.len() as u64,
+                    protocol: "tcp".into(),
+                    operation: "send".into(),
+                    destination,
+                    request_headers: Vec::new(),
+                    request_preview: Some(preview.clone()),
+                    request_size: data.len() as u64,
+                    request_sha256: (!data.is_empty()).then(|| hex::encode(Sha256::digest(data))),
+                    response_status: None,
+                    response_headers: Vec::new(),
+                    response_size: 0,
+                    response_sha256: None,
+                    artifact_id: None,
+                    outcome: if offline {
+                        "offline".into()
+                    } else {
+                        "accepted by scenario".into()
                     },
                 });
                 Ok((
@@ -3611,19 +3855,51 @@ impl Machine {
                     vec![preview],
                 ))
             }
-            "recv" => Ok((
+            "recv" => {
                 if self.environment.network_mode == NetworkMode::Offline {
-                    u32::MAX
-                } else {
-                    0
-                },
-                if self.environment.network_mode == NetworkMode::Offline {
-                    "Synthetic offline receive failure".into()
-                } else {
-                    "Synthetic network sink returned EOF".into()
-                },
-                hex_args(),
-            )),
+                    return Ok((
+                        u32::MAX,
+                        "Synthetic offline receive failure".into(),
+                        hex_args(),
+                    ));
+                }
+                let socket = args.first().copied().unwrap_or(0);
+                let output = args.get(1).copied().unwrap_or(0);
+                let maximum = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let bytes = self
+                    .network_runtime
+                    .recv_socket(socket, maximum)
+                    .unwrap_or_default();
+                if output != 0 {
+                    let _ = self.memory.write(output, &bytes);
+                }
+                let destination = self
+                    .network_runtime
+                    .socket_destination(socket)
+                    .unwrap_or_else(|| format!("socket:0x{socket:x}"));
+                self.network_exchanges.push(NetworkExchange {
+                    sequence: self.network_exchanges.len() as u64,
+                    protocol: "tcp".into(),
+                    operation: "recv".into(),
+                    destination,
+                    request_headers: Vec::new(),
+                    request_preview: None,
+                    request_size: 0,
+                    request_sha256: None,
+                    response_status: None,
+                    response_headers: Vec::new(),
+                    response_size: bytes.len() as u64,
+                    response_sha256: (!bytes.is_empty())
+                        .then(|| hex::encode(Sha256::digest(&bytes))),
+                    artifact_id: None,
+                    outcome: "scripted response".into(),
+                });
+                Ok((
+                    bytes.len() as u32,
+                    format!("Returned {} scripted socket bytes", bytes.len()),
+                    vec![printable_preview(&bytes)],
+                ))
+            }
             "createmutexa" | "createmutexw" => {
                 let wide = name.ends_with('w');
                 let pointer = args.get(2).copied().unwrap_or(0);
@@ -4121,6 +4397,7 @@ impl Machine {
             "sizeofresource" => Ok((0, "Synthetic resource size is zero".into(), hex_args())),
             "closehandle" | "regclosekey" | "internetclosehandle" => {
                 let handle = args.first().copied().unwrap_or(0);
+                self.network_runtime.close(handle);
                 let description = self
                     .windows
                     .describe(handle)
@@ -4169,6 +4446,86 @@ impl Machine {
             detail: detail.into(),
             result,
         });
+    }
+
+    fn parse_headers(&self, value: &str) -> Vec<NetworkHeader> {
+        value
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .take(64)
+            .map(|(name, value)| NetworkHeader {
+                name: name.trim().chars().take(64).collect(),
+                value: value.trim().chars().take(1024).collect(),
+            })
+            .collect()
+    }
+
+    fn resolve_http_request(&mut self, handle: u32, protocol: &str) -> bool {
+        let Some((method, _url, request_headers, request_body)) =
+            self.network_runtime.request_metadata(handle)
+        else {
+            return false;
+        };
+        let hops = self.network_runtime.resolve_request(handle);
+        if hops.is_empty() {
+            return false;
+        }
+        for (index, hop) in hops.into_iter().enumerate() {
+            let artifact_id = if !hop.body.is_empty() && !hop.redirected {
+                let origin =
+                    self.artifact_origin(protocol, "network_download", None, Some(hop.url.clone()));
+                self.artifacts.capture(
+                    ArtifactCapture {
+                        kind: ArtifactKind::NetworkDownload,
+                        name: format!("network-download-{}.bin", self.network_exchanges.len()),
+                        trigger: "network_download",
+                        address: None,
+                        path: Some(hop.url.clone()),
+                        permissions: None,
+                        force: true,
+                    },
+                    &hop.body,
+                    origin,
+                )
+            } else {
+                None
+            };
+            self.network_exchanges.push(NetworkExchange {
+                sequence: self.network_exchanges.len() as u64,
+                protocol: protocol.into(),
+                operation: method.clone(),
+                destination: hop.url.clone(),
+                request_headers: request_headers.clone(),
+                request_preview: (!request_body.is_empty())
+                    .then(|| printable_preview(&request_body)),
+                request_size: request_body.len() as u64,
+                request_sha256: (!request_body.is_empty())
+                    .then(|| hex::encode(Sha256::digest(&request_body))),
+                response_status: Some(hop.status),
+                response_headers: hop.headers.clone(),
+                response_size: hop.body.len() as u64,
+                response_sha256: (!hop.body.is_empty())
+                    .then(|| hex::encode(Sha256::digest(&hop.body))),
+                artifact_id,
+                outcome: if hop.redirected {
+                    format!("redirect hop {}", index + 1)
+                } else {
+                    "scripted response".into()
+                },
+            });
+            self.network.push(NetworkEvent {
+                operation: "http_exchange".into(),
+                destination: hop.url,
+                size: Some(hop.body.len() as u32),
+                preview: Some(printable_preview(&hop.body)),
+                synthetic_result: format!(
+                    "HTTP {} from scenario {}",
+                    hop.status,
+                    self.network_runtime.scenario_id()
+                ),
+            });
+        }
+        true
     }
 
     fn write_find_data(&mut self, output: u32, path: &str, wide: bool) {
@@ -4724,6 +5081,7 @@ mod tests {
             filesystem: Vec::new(),
             registry: Vec::new(),
             network: Vec::new(),
+            network_exchanges: Vec::new(),
             memory_events: Vec::new(),
             injection: Vec::new(),
             persistence: Vec::new(),
@@ -4764,6 +5122,7 @@ mod tests {
             next_thread_switch: THREAD_QUANTUM,
             first_unsupported: None,
             invalid_instruction_count: 0,
+            network_runtime: NetworkRuntime::new(crate::NetworkScenario::default()),
         }
     }
 
@@ -5203,6 +5562,49 @@ mod tests {
         assert_eq!(
             machine.memory.read(0x3400, 32).unwrap(),
             Sha256::digest(b"aegis").as_slice()
+        );
+    }
+
+    #[test]
+    fn follows_scripted_http_redirects_and_promotes_downloads() {
+        let mut machine = machine_with_code(&[0xf4]);
+        let handle = machine
+            .windows
+            .allocate(HandleResource::Internet {
+                label: "request".into(),
+            })
+            .unwrap();
+        machine.network_runtime.register_request(
+            handle,
+            "GET".into(),
+            "http://artifact.example.test/start".into(),
+        );
+        assert!(machine.resolve_http_request(handle, "wininet"));
+        assert_eq!(machine.network_exchanges.len(), 2);
+        assert_eq!(machine.network_exchanges[0].response_status, Some(302));
+        assert!(machine.network_exchanges[1].artifact_id.is_some());
+        assert_eq!(
+            machine.network_runtime.read_response(handle, 1024).unwrap(),
+            b"MZ AEGIS_SAFE_NETWORK_DOWNLOAD\0"
+        );
+    }
+
+    #[test]
+    fn returns_scripted_socket_responses() {
+        let mut machine = machine_with_code(&[0xf4]);
+        let handle = machine
+            .windows
+            .allocate(HandleResource::Internet {
+                label: "socket".into(),
+            })
+            .unwrap();
+        machine.network_runtime.register_socket(handle);
+        machine
+            .network_runtime
+            .connect_socket(handle, "10.20.30.40:8080".into());
+        assert_eq!(
+            machine.network_runtime.recv_socket(handle, 1024).unwrap(),
+            b"AEGIS_SAFE_SOCKET_RESPONSE"
         );
     }
 }

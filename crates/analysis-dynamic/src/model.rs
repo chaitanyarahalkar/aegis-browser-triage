@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 9;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 10;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -14,6 +14,8 @@ pub struct DynamicOptions {
     pub max_trace_events: usize,
     #[serde(default)]
     pub environment: EnvironmentProfile,
+    #[serde(default)]
+    pub network_scenario: NetworkScenario,
 }
 
 const fn default_max_instructions() -> u64 {
@@ -30,6 +32,7 @@ impl Default for DynamicOptions {
             max_instructions: default_max_instructions(),
             max_trace_events: default_max_trace_events(),
             environment: EnvironmentProfile::default(),
+            network_scenario: NetworkScenario::default(),
         }
     }
 }
@@ -39,6 +42,115 @@ impl DynamicOptions {
         self.max_instructions = self.max_instructions.clamp(1, HARD_MAX_INSTRUCTIONS);
         self.max_trace_events = self.max_trace_events.clamp(1, HARD_MAX_TRACE_EVENTS);
         self.environment = self.environment.bounded();
+        self.network_scenario = self.network_scenario.bounded();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkScenario {
+    pub id: String,
+    pub dns: Vec<DnsScenario>,
+    pub http: Vec<HttpScenario>,
+    pub sockets: Vec<SocketScenario>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsScenario {
+    pub host: String,
+    pub address: [u8; 4],
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkHeader {
+    pub name: String,
+    pub value: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpScenario {
+    pub url: String,
+    pub status: u16,
+    pub headers: Vec<NetworkHeader>,
+    pub body: Vec<u8>,
+    pub redirect_to: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocketScenario {
+    pub destination: String,
+    pub response: Vec<u8>,
+}
+
+impl Default for NetworkScenario {
+    fn default() -> Self {
+        Self {
+            id: "safe-default".into(),
+            dns: vec![DnsScenario {
+                host: "artifact.example.test".into(),
+                address: [10, 20, 30, 40],
+            }],
+            http: vec![
+                HttpScenario {
+                    url: "http://artifact.example.test/start".into(),
+                    status: 302,
+                    headers: vec![NetworkHeader {
+                        name: "Location".into(),
+                        value: "http://artifact.example.test/payload".into(),
+                    }],
+                    body: Vec::new(),
+                    redirect_to: Some("http://artifact.example.test/payload".into()),
+                },
+                HttpScenario {
+                    url: "http://artifact.example.test/payload".into(),
+                    status: 200,
+                    headers: vec![NetworkHeader {
+                        name: "Content-Type".into(),
+                        value: "application/octet-stream".into(),
+                    }],
+                    body: b"MZ AEGIS_SAFE_NETWORK_DOWNLOAD\0".to_vec(),
+                    redirect_to: None,
+                },
+            ],
+            sockets: vec![SocketScenario {
+                destination: "10.20.30.40:8080".into(),
+                response: b"AEGIS_SAFE_SOCKET_RESPONSE".to_vec(),
+            }],
+        }
+    }
+}
+
+impl NetworkScenario {
+    fn bounded(mut self) -> Self {
+        self.id = bounded_text(&self.id, 64, "custom-network");
+        self.dns.truncate(32);
+        self.http.truncate(32);
+        self.sockets.truncate(32);
+        let mut total = 0usize;
+        for item in &mut self.dns {
+            item.host = bounded_text(&item.host, 253, "invalid.test");
+        }
+        for item in &mut self.http {
+            item.url = bounded_text(&item.url, 2048, "http://invalid.test/");
+            item.headers.truncate(64);
+            for header in &mut item.headers {
+                header.name = bounded_text(&header.name, 64, "X-Aegis");
+                header.value = bounded_text(&header.value, 1024, "");
+            }
+            if let Some(value) = &item.redirect_to {
+                item.redirect_to = Some(bounded_text(value, 2048, "http://invalid.test/"));
+            }
+            let available = (4 * 1024 * 1024usize)
+                .saturating_sub(total)
+                .min(1024 * 1024);
+            item.body.truncate(available);
+            total += item.body.len();
+        }
+        for item in &mut self.sockets {
+            item.destination = bounded_text(&item.destination, 512, "0.0.0.0:0");
+            let available = (4 * 1024 * 1024usize)
+                .saturating_sub(total)
+                .min(1024 * 1024);
+            item.response.truncate(available);
+            total += item.response.len();
+        }
         self
     }
 }
@@ -205,6 +317,7 @@ pub struct DynamicReport {
     pub filesystem: Vec<FileEvent>,
     pub registry: Vec<RegistryEvent>,
     pub network: Vec<NetworkEvent>,
+    pub network_exchanges: Vec<NetworkExchange>,
     pub memory: Vec<MemoryEvent>,
     pub injection: Vec<InjectionEvent>,
     pub persistence: Vec<PersistenceEvent>,
@@ -231,6 +344,25 @@ pub enum ArtifactKind {
     VirtualFile,
     RemoteMemory,
     Configuration,
+    NetworkDownload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkExchange {
+    pub sequence: u64,
+    pub protocol: String,
+    pub operation: String,
+    pub destination: String,
+    pub request_headers: Vec<NetworkHeader>,
+    pub request_preview: Option<String>,
+    pub request_size: u64,
+    pub request_sha256: Option<String>,
+    pub response_status: Option<u16>,
+    pub response_headers: Vec<NetworkHeader>,
+    pub response_size: u64,
+    pub response_sha256: Option<String>,
+    pub artifact_id: Option<String>,
+    pub outcome: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,6 +545,7 @@ pub struct ExecutionProfile {
     pub trace_limit: usize,
     pub network_mode: String,
     pub environment: EnvironmentProfile,
+    pub network_scenario: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

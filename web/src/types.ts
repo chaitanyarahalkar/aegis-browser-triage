@@ -130,6 +130,8 @@ export interface DynamicNetworkEvent {
   preview: string | null
   synthetic_result: string
 }
+export interface DynamicNetworkHeader { name: string; value: string }
+export interface DynamicNetworkExchange { sequence: number; protocol: string; operation: string; destination: string; request_headers: DynamicNetworkHeader[]; request_preview: string | null; request_size: number; request_sha256: string | null; response_status: number | null; response_headers: DynamicNetworkHeader[]; response_size: number; response_sha256: string | null; artifact_id: string | null; outcome: string }
 
 export interface DynamicMemoryEvent {
   operation: string
@@ -239,6 +241,7 @@ export interface DynamicReport {
     trace_limit: number
     network_mode: string
     environment: DynamicEnvironmentProfile
+    network_scenario: string
   }
   termination: DynamicTermination
   instruction_count: number
@@ -250,6 +253,7 @@ export interface DynamicReport {
   filesystem: DynamicFileEvent[]
   registry: DynamicRegistryEvent[]
   network: DynamicNetworkEvent[]
+  network_exchanges: DynamicNetworkExchange[]
   memory: DynamicMemoryEvent[]
   injection: DynamicInjectionEvent[]
   persistence: DynamicPersistenceEvent[]
@@ -285,7 +289,7 @@ export interface PayloadGeneration {
   executable_heap: boolean
 }
 
-export type ArtifactKind = 'memory' | 'virtual_file' | 'remote_memory' | 'configuration'
+export type ArtifactKind = 'memory' | 'virtual_file' | 'remote_memory' | 'configuration' | 'network_download'
 export interface ArtifactOrigin { api: string; instruction: number; virtual_time_ms: number; timeline_sequence: number | null; trigger: string; address: number | null; path: string | null }
 export interface ArtifactSummary {
   id: string; kind: ArtifactKind; name: string; size: number; captured_size: number; sha256: string; entropy: number; detected_format: string; trigger: string; address: number | null; path: string | null; permissions: string | null; strings: Array<{ offset: number; encoding: string; value: string }>; indicators: Array<{ kind: string; value: string; offset: number }>; origins: ArtifactOrigin[]; truncated: boolean

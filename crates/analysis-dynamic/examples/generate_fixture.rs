@@ -12,6 +12,8 @@ fn main() {
         analysis_dynamic::fixture::instruction_coverage_pe32()
     } else if std::env::args().any(|argument| argument == "--system") {
         analysis_dynamic::fixture::system_objects_pe32()
+    } else if std::env::args().any(|argument| argument == "--network") {
+        analysis_dynamic::fixture::network_scenario_pe32()
     } else {
         analysis_dynamic::fixture::safe_dynamic_pe32()
     };

@@ -90,7 +90,8 @@ pub fn signature(name: &str) -> ApiSignature {
         | "lookupprivilegevaluew"
         | "findresourcea"
         | "findresourcew" => (3, true),
-        "virtualalloc" | "send" | "recv" => (4, true),
+        "virtualalloc" | "send" | "recv" | "internetreadfile" | "winhttpconnect"
+        | "winhttpreaddata" => (4, true),
         "raiseexception" => (4, true),
         "createeventa" | "createeventw" | "crypthashdata" => (4, true),
         "heapalloc" => (3, true),
@@ -101,10 +102,13 @@ pub fn signature(name: &str) -> ApiSignature {
         | "cryptacquirecontextw"
         | "cryptcreatehash"
         | "cryptgethashparam" => (5, true),
+        "winhttpopen" | "httpqueryinfoa" | "httpqueryinfow" => (5, true),
         "regsetvalueexa" | "regsetvalueexw" | "internetopenurla" | "internetopenurlw" => (6, true),
         "createthread" => (6, true),
         "createfilemappinga" | "createfilemappingw" | "adjusttokenprivileges" => (6, true),
+        "winhttpqueryheaders" => (6, true),
         "createfilea" | "createfilew" => (7, true),
+        "winhttpopenrequest" | "winhttpsendrequest" => (7, true),
         "createnamedpipea" | "createnamedpipew" => (8, true),
         "createprocessa" | "createprocessw" => (10, true),
         "openprocess" | "queueuserapc" => (3, true),
@@ -163,6 +167,7 @@ pub fn signature(name: &str) -> ApiSignature {
         | "startservicew" => (3, true),
         "createservicea" | "createservicew" => (13, true),
         "deleteservice" | "removevectoredexceptionhandler" => (1, true),
+        "winhttpreceiveresponse" => (1, true),
         "shellexecutea" | "shellexecutew" => (6, true),
         _ => (decorated_argument_count(name).unwrap_or(0), false),
     };

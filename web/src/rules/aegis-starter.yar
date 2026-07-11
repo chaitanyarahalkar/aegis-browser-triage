@@ -57,3 +57,14 @@ rule Aegis_Safe_Runtime_Artifact : demo safe runtime {
   condition:
     $marker
 }
+
+rule Aegis_Safe_Network_Download : demo safe network {
+  meta:
+    description = "Identifies the first-party inert scripted network download"
+    severity = "info"
+    author = "Aegis"
+  strings:
+    $marker = "AEGIS_SAFE_NETWORK_DOWNLOAD" ascii
+  condition:
+    $marker
+}
