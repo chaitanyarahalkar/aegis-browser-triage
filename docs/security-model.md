@@ -57,6 +57,7 @@ Dynamic analysis:
 - In-memory files, registry keys, network sink, process events, mappings, and
   synthetic remote-process address spaces
 - 4,096 live handles, 1 MiB per virtual file, and 16 MiB total virtual file data
+- 4 MiB per synthetic remote-memory region and 16 MiB total remote-process memory
 - A bounded synthetic PEB/TEB and process environment that reveal no host values
 - Dynamic symbol resolution creates emulator-owned API stubs only; resolved
   addresses never refer to browser or host functions

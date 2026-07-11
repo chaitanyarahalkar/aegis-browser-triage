@@ -57,11 +57,20 @@ pub struct DynamicReport {
     pub network: Vec<NetworkEvent>,
     pub memory: Vec<MemoryEvent>,
     pub injection: Vec<InjectionEvent>,
+    pub persistence: Vec<PersistenceEvent>,
     pub timeline: Vec<TimelineEvent>,
     pub coverage: ExecutionCoverage,
     pub findings: Vec<DynamicFinding>,
     pub warnings: Vec<String>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistenceEvent {
+    pub mechanism: String,
+    pub operation: String,
+    pub target: String,
+    pub value: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

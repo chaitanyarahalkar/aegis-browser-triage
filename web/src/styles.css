@@ -136,6 +136,14 @@ code { font-family: var(--mono); }
 .timeline-filters button { min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: white; color: var(--muted); cursor: pointer; font-size: 11px; }
 .timeline-filters button.active { border-color: #b8c8ef; background: #eef3ff; color: var(--accent); }
 .coverage-layout { display: grid; gap: 18px; }
+.injection-chain { padding: 16px; display: flex; gap: 8px; overflow-x: auto; background: var(--surface-muted); }
+.injection-chain article { position: relative; min-width: 200px; padding: 13px; border: 1px solid #e6b8b4; border-radius: 7px; background: #fff8f7; display: flex; gap: 10px; }
+.injection-chain article:not(:last-child)::after { content: "→"; position: absolute; right: -9px; top: 45%; z-index: 1; color: var(--red); }
+.injection-chain article > span { width: 22px; height: 22px; flex: 0 0 auto; border-radius: 50%; display: grid; place-items: center; background: var(--red); color: white; font: 700 10px/1 var(--mono); }
+.injection-chain article div { min-width: 0; display: grid; gap: 6px; }
+.injection-chain strong { text-transform: capitalize; font-size: 11px; }
+.injection-chain code, .injection-chain small { overflow: hidden; text-overflow: ellipsis; font-size: 9px; white-space: nowrap; }
+.injection-chain small { color: var(--muted); }
 
 .table-scroll { max-width: 100%; overflow: auto; }
 table { width: 100%; border-collapse: collapse; text-align: left; }

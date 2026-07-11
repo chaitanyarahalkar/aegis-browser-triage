@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 const MAX_HANDLES: usize = 4_096;
 const MAX_FILE_BYTES: usize = 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REMOTE_REGION_BYTES: usize = 4 * 1024 * 1024;
+const MAX_TOTAL_REMOTE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub enum HandleResource {
@@ -12,6 +14,8 @@ pub enum HandleResource {
     Internet { label: String },
     Process { pid: u32 },
     Thread { tid: u32 },
+    Heap { label: String },
+    Service { name: String },
 }
 
 #[derive(Debug)]
@@ -22,6 +26,8 @@ pub struct VirtualWindows {
     files: BTreeMap<String, Vec<u8>>,
     total_file_bytes: usize,
     registry: BTreeMap<String, Vec<u8>>,
+    remote_memory: BTreeMap<(u32, u32), Vec<u8>>,
+    total_remote_bytes: usize,
 }
 
 impl Default for VirtualWindows {
@@ -33,6 +39,8 @@ impl Default for VirtualWindows {
             files: BTreeMap::new(),
             total_file_bytes: 0,
             registry: BTreeMap::new(),
+            remote_memory: BTreeMap::new(),
+            total_remote_bytes: 0,
         }
     }
 }
@@ -77,6 +85,8 @@ impl VirtualWindows {
             Some(HandleResource::Internet { label }) => Some(label.clone()),
             Some(HandleResource::Process { pid }) => Some(format!("process:{pid}")),
             Some(HandleResource::Thread { tid }) => Some(format!("thread:{tid}")),
+            Some(HandleResource::Heap { label }) => Some(label.clone()),
+            Some(HandleResource::Service { name }) => Some(name.clone()),
             None => None,
         }
     }
@@ -135,6 +145,78 @@ impl VirtualWindows {
         result
     }
 
+    pub fn file_size(&self, handle: u32) -> Option<usize> {
+        let path = self.file_path(handle)?;
+        self.files.get(path).map(Vec::len)
+    }
+
+    pub fn set_file_offset(&mut self, handle: u32, distance: i32, method: u32) -> Option<usize> {
+        let (path, current) = match self.handles.get(&handle) {
+            Some(HandleResource::File { path, offset }) => (path.clone(), *offset),
+            _ => return None,
+        };
+        let base = match method {
+            0 => 0i64,
+            1 => current as i64,
+            2 => self.files.get(&path).map_or(0, Vec::len) as i64,
+            _ => return None,
+        };
+        let next = base.saturating_add(distance as i64).max(0) as usize;
+        if let Some(HandleResource::File { offset, .. }) = self.handles.get_mut(&handle) {
+            *offset = next.min(MAX_FILE_BYTES);
+        }
+        Some(next.min(MAX_FILE_BYTES))
+    }
+
+    pub fn delete_file(&mut self, path: &str) -> bool {
+        let Some(data) = self.files.remove(path) else {
+            return false;
+        };
+        self.total_file_bytes = self.total_file_bytes.saturating_sub(data.len());
+        true
+    }
+
+    pub fn copy_file(&mut self, source: &str, destination: &str) -> bool {
+        let Some(data) = self.files.get(source).cloned() else {
+            return false;
+        };
+        let current = self.files.get(destination).map_or(0, Vec::len);
+        if self
+            .total_file_bytes
+            .saturating_add(data.len().saturating_sub(current))
+            > MAX_TOTAL_FILE_BYTES
+        {
+            self.last_error = 8;
+            return false;
+        }
+        let previous = self
+            .files
+            .insert(destination.into(), data.clone())
+            .map_or(0, |value| value.len());
+        self.total_file_bytes = self
+            .total_file_bytes
+            .saturating_sub(previous)
+            .saturating_add(data.len());
+        true
+    }
+
+    pub fn move_file(&mut self, source: &str, destination: &str) -> bool {
+        let Some(data) = self.files.remove(source) else {
+            return false;
+        };
+        if let Some(previous) = self.files.insert(destination.into(), data) {
+            self.total_file_bytes = self.total_file_bytes.saturating_sub(previous.len());
+        }
+        for resource in self.handles.values_mut() {
+            if let HandleResource::File { path, .. } = resource
+                && path == source
+            {
+                *path = destination.into();
+            }
+        }
+        true
+    }
+
     pub fn registry_path(&self, handle: u32) -> Option<&str> {
         match self.handles.get(&handle) {
             Some(HandleResource::Registry { key }) => Some(key),
@@ -168,6 +250,56 @@ impl VirtualWindows {
         let removed = self.registry.remove(&format!("{key}\\{name}")).is_some();
         self.last_error = if removed { 0 } else { 2 };
         removed
+    }
+
+    pub fn open_process(&mut self, pid: u32) -> Option<u32> {
+        self.allocate(HandleResource::Process { pid })
+    }
+
+    pub fn allocate_remote(&mut self, process: u32, address: u32, size: usize) -> bool {
+        if !matches!(
+            self.handles.get(&process),
+            Some(HandleResource::Process { .. })
+        ) || size == 0
+            || size > MAX_REMOTE_REGION_BYTES
+            || self.total_remote_bytes.saturating_add(size) > MAX_TOTAL_REMOTE_BYTES
+        {
+            self.last_error = 8;
+            return false;
+        }
+        if self.remote_memory.keys().any(|(handle, start)| {
+            *handle == process
+                && address
+                    < start.saturating_add(self.remote_memory[&(*handle, *start)].len() as u32)
+                && address.saturating_add(size as u32) > *start
+        }) {
+            self.last_error = 487;
+            return false;
+        }
+        self.remote_memory.insert((process, address), vec![0; size]);
+        self.total_remote_bytes = self.total_remote_bytes.saturating_add(size);
+        self.last_error = 0;
+        true
+    }
+
+    pub fn write_remote(&mut self, process: u32, address: u32, data: &[u8]) -> usize {
+        let Some(((.., start), region)) =
+            self.remote_memory
+                .iter_mut()
+                .find(|((handle, start), region)| {
+                    *handle == process
+                        && address >= *start
+                        && address.saturating_add(data.len() as u32)
+                            <= start.saturating_add(region.len() as u32)
+                })
+        else {
+            self.last_error = 299;
+            return 0;
+        };
+        let offset = address.saturating_sub(*start) as usize;
+        region[offset..offset + data.len()].copy_from_slice(data);
+        self.last_error = 0;
+        data.len()
     }
 }
 

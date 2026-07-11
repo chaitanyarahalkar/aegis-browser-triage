@@ -90,11 +90,45 @@ pub fn signature(name: &str) -> ApiSignature {
         "regcreatekeyexa" | "regcreatekeyexw" => (9, true),
         "regqueryvalueexa" | "regqueryvalueexw" => (6, true),
         "regdeletevaluea" | "regdeletevaluew" | "regdeletekeya" | "regdeletekeyw" => (2, true),
+        "heapcreate" => (3, true),
+        "heaprealloc" => (4, true),
+        "lstrlena" | "lstrlenw" | "strlen" | "interlockedincrement" | "interlockeddecrement" => {
+            (1, true)
+        }
+        "lstrcpya"
+        | "lstrcpyw"
+        | "lstrcata"
+        | "lstrcatw"
+        | "strcmp"
+        | "rtlzeromemory"
+        | "interlockedexchange" => (2, true),
+        "rtlmovememory" | "memcpy" | "memmove" | "memset" | "interlockedcompareexchange" => {
+            (3, true)
+        }
+        "multibytetowidechar" => (6, true),
+        "widechartomultibyte" => (8, true),
+        "copyfilea" | "copyfilew" => (3, true),
+        "movefilea" | "movefilew" | "createdirectorya" | "createdirectoryw" | "getfilesize" => {
+            (2, true)
+        }
+        "removedirectorya" | "removedirectoryw" | "getfileattributesa" | "getfileattributesw" => {
+            (1, true)
+        }
+        "setfilepointer" => (4, true),
+        "openscmanagera" | "openscmanagerw" | "openservicea" | "openservicew" | "startservicea"
+        | "startservicew" => (3, true),
+        "createservicea" | "createservicew" => (13, true),
+        "deleteservice" => (1, true),
+        "shellexecutea" | "shellexecutew" => (6, true),
         _ => (decorated_argument_count(name).unwrap_or(0), false),
     };
     ApiSignature {
         argument_count,
-        convention: if normalized.starts_with("wsprintf") {
+        convention: if normalized.starts_with("wsprintf")
+            || matches!(
+                normalized.as_str(),
+                "strlen" | "strcmp" | "memcpy" | "memmove" | "memset"
+            ) {
             CallingConvention::Cdecl
         } else {
             CallingConvention::Stdcall

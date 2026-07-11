@@ -146,6 +146,13 @@ export interface DynamicInjectionEvent {
   preview: string | null
 }
 
+export interface DynamicPersistenceEvent {
+  mechanism: string
+  operation: string
+  target: string
+  value: string | null
+}
+
 export interface DynamicProcessEvent {
   operation: string
   command: string
@@ -212,6 +219,7 @@ export interface DynamicReport {
   network: DynamicNetworkEvent[]
   memory: DynamicMemoryEvent[]
   injection: DynamicInjectionEvent[]
+  persistence: DynamicPersistenceEvent[]
   timeline: DynamicTimelineEvent[]
   coverage: DynamicCoverage
   findings: DynamicFinding[]

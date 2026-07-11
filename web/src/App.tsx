@@ -491,7 +491,7 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
     )
   }
 
-  const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length + report.injection.length
+  const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length + report.injection.length + report.persistence.length
   return (
     <div className="dynamic-report">
       <div className="stats-grid four">
@@ -506,6 +506,7 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
           {report.findings.map((finding) => <article className="finding" key={finding.id}><Severity value={finding.severity} /><div><h3>{finding.title}</h3><p>{finding.rationale}</p>{finding.evidence.length > 0 && <div className="evidence">{finding.evidence.map((value) => <code key={value}>{value}</code>)}</div>}</div></article>)}
         </div>
       </Section>
+      {report.injection.length > 0 && <InjectionChain events={report.injection} />}
       {report.warnings.length > 0 && <div className="notice warning-notice">{report.warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
       <div className="subtabs">
         <button className={view === 'timeline' ? 'active' : ''} type="button" onClick={() => setView('timeline')}>Timeline ({report.timeline.length})</button>
@@ -521,6 +522,10 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
       {view === 'coverage' && <CoverageView report={report} />}
     </div>
   )
+}
+
+function InjectionChain({ events }: { events: DynamicReport['injection'] }) {
+  return <Section title="Process injection chain" description="Correlated remote operations against synthetic process address spaces."><div className="injection-chain">{events.map((event, index) => <article key={`${event.operation}-${index}`}><span>{index + 1}</span><div><strong>{event.operation.replaceAll('_', ' ')}</strong><code>process {formatOffset(event.process_handle)} · address {formatOffset(event.address)}</code><small>{formatBytes(event.size)}{event.preview ? ` · ${event.preview}` : ''}</small></div></article>)}</div></Section>
 }
 
 function TimelineView({ report }: { report: DynamicReport }) {
@@ -546,6 +551,7 @@ function BehaviorView({ report }: { report: DynamicReport }) {
     ...report.registry.map((event) => ({ type: 'Registry', operation: event.operation, target: event.key, detail: event.value ?? 'Synthetic registry' })),
     ...report.memory.map((event) => ({ type: 'Memory', operation: event.operation, target: formatOffset(event.address), detail: `${formatBytes(event.size)} · ${event.permissions}` })),
     ...report.injection.map((event) => ({ type: 'Injection', operation: event.operation, target: `process ${formatOffset(event.process_handle)} · ${formatOffset(event.address)}`, detail: `${formatBytes(event.size)}${event.preview ? ` · ${event.preview}` : ''}` })),
+    ...report.persistence.map((event) => ({ type: 'Persistence', operation: event.operation, target: event.target, detail: `${event.mechanism}${event.value ? ` · ${event.value}` : ''}` })),
   ]
   if (rows.length === 0) return <EmptyState title="No high-level behavior events" text="The sample did not reach the currently modeled APIs." />
   return <Table><thead><tr><th>Type</th><th>Operation</th><th>Target</th><th>Result</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.type}-${index}`}><td><span className="tag">{row.type}</span></td><td>{row.operation}</td><td><code>{row.target}</code></td><td>{row.detail}</td></tr>)}</tbody></Table>

@@ -1,8 +1,8 @@
 use crate::{
     ApiEvent, DynamicError, DynamicFinding, DynamicOptions, DynamicReport, DynamicSeverity,
     ExecutionCoverage, ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent,
-    InstructionEvent, MemoryEvent, NetworkEvent, ProcessEvent, RegistryEvent, Termination,
-    TimelineEvent,
+    InstructionEvent, MemoryEvent, NetworkEvent, PersistenceEvent, ProcessEvent, RegistryEvent,
+    Termination, TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     cpu::Cpu,
     loader::{self, ApiImport, STACK_TOP},
@@ -84,6 +84,7 @@ pub(crate) fn run(
         network: Vec::new(),
         memory_events: Vec::new(),
         injection: Vec::new(),
+        persistence: Vec::new(),
         warnings: loaded.warnings,
         termination: None,
         truncated: false,
@@ -124,6 +125,7 @@ pub(crate) fn run(
         network: machine.network,
         memory: machine.memory_events,
         injection: machine.injection,
+        persistence: machine.persistence,
         timeline: machine.timeline,
         coverage: ExecutionCoverage {
             unique_instruction_addresses: machine.unique_instruction_addresses.len(),
@@ -153,6 +155,7 @@ struct Machine {
     network: Vec<NetworkEvent>,
     memory_events: Vec<MemoryEvent>,
     injection: Vec<InjectionEvent>,
+    persistence: Vec<PersistenceEvent>,
     warnings: Vec<String>,
     termination: Option<Termination>,
     truncated: bool,
@@ -931,6 +934,7 @@ impl Machine {
             self.network.len(),
             self.memory_events.len(),
             self.injection.len(),
+            self.persistence.len(),
         );
         let (result, summary, display_args) = self.emulate_api(&lower, &args)?;
         self.cpu.eax = result;
@@ -962,7 +966,7 @@ impl Machine {
         &self,
         api: &str,
         summary: &str,
-        before: (usize, usize, usize, usize, usize, usize),
+        before: (usize, usize, usize, usize, usize, usize, usize),
     ) -> (String, String, String) {
         if self.processes.len() > before.0 {
             let event = self.processes.last().expect("process event was appended");
@@ -1016,6 +1020,17 @@ impl Machine {
                     "process 0x{:08x} at 0x{:08x}",
                     event.process_handle, event.address
                 ),
+            );
+        }
+        if self.persistence.len() > before.6 {
+            let event = self
+                .persistence
+                .last()
+                .expect("persistence event was appended");
+            return (
+                "persistence".into(),
+                event.operation.clone(),
+                event.target.clone(),
             );
         }
         ("api".into(), normalize_name(api), summary.into())
@@ -1285,13 +1300,165 @@ impl Machine {
                     vec![command],
                 ))
             }
+            "shellexecutea" | "shellexecutew" => {
+                let wide = name.ends_with('w');
+                let file_pointer = args.get(2).copied().unwrap_or(0);
+                let parameters_pointer = args.get(3).copied().unwrap_or(0);
+                let file = if wide {
+                    self.memory.read_wide_string(file_pointer, 1_024)
+                } else {
+                    self.memory.read_c_string(file_pointer, 1_024)
+                };
+                let parameters = if wide {
+                    self.memory.read_wide_string(parameters_pointer, 2_048)
+                } else {
+                    self.memory.read_c_string(parameters_pointer, 2_048)
+                };
+                let command = format!("{file} {parameters}").trim().to_owned();
+                self.processes.push(ProcessEvent {
+                    operation: "shell_execute".into(),
+                    command: command.clone(),
+                    synthetic_result: "Captured only; no host process created".into(),
+                });
+                Ok((
+                    33,
+                    format!("Captured shell execution request: {command}"),
+                    vec![command],
+                ))
+            }
+            "openscmanagera" | "openscmanagerw" => {
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Service {
+                        name: "Service Control Manager".into(),
+                    })
+                    .unwrap_or(0);
+                Ok((
+                    handle,
+                    "Opened synthetic Service Control Manager".into(),
+                    vec![format!("0x{handle:08x}")],
+                ))
+            }
+            "openservicea" | "openservicew" => {
+                let pointer = args.get(1).copied().unwrap_or(0);
+                let service = if name.ends_with('w') {
+                    self.memory.read_wide_string(pointer, 512)
+                } else {
+                    self.memory.read_c_string(pointer, 512)
+                };
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Service {
+                        name: service.clone(),
+                    })
+                    .unwrap_or(0);
+                Ok((
+                    handle,
+                    format!("Opened synthetic service {service}"),
+                    vec![service],
+                ))
+            }
+            "createservicea" | "createservicew" => {
+                let wide = name.ends_with('w');
+                let service_pointer = args.get(1).copied().unwrap_or(0);
+                let binary_pointer = args.get(7).copied().unwrap_or(0);
+                let service = if wide {
+                    self.memory.read_wide_string(service_pointer, 512)
+                } else {
+                    self.memory.read_c_string(service_pointer, 512)
+                };
+                let binary = if wide {
+                    self.memory.read_wide_string(binary_pointer, 2_048)
+                } else {
+                    self.memory.read_c_string(binary_pointer, 2_048)
+                };
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Service {
+                        name: service.clone(),
+                    })
+                    .unwrap_or(0);
+                self.persistence.push(PersistenceEvent {
+                    mechanism: "service".into(),
+                    operation: "create".into(),
+                    target: service.clone(),
+                    value: Some(binary.clone()),
+                });
+                Ok((
+                    handle,
+                    format!("Created synthetic service {service} for {binary}"),
+                    vec![service, binary],
+                ))
+            }
+            "startservicea" | "startservicew" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let service = self
+                    .windows
+                    .describe(handle)
+                    .unwrap_or_else(|| format!("handle:0x{handle:08x}"));
+                self.persistence.push(PersistenceEvent {
+                    mechanism: "service".into(),
+                    operation: "start".into(),
+                    target: service.clone(),
+                    value: None,
+                });
+                Ok((
+                    1,
+                    format!("Started synthetic service {service}"),
+                    vec![service],
+                ))
+            }
+            "deleteservice" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let service = self
+                    .windows
+                    .describe(handle)
+                    .unwrap_or_else(|| format!("handle:0x{handle:08x}"));
+                self.persistence.push(PersistenceEvent {
+                    mechanism: "service".into(),
+                    operation: "delete".into(),
+                    target: service.clone(),
+                    value: None,
+                });
+                Ok((
+                    1,
+                    format!("Deleted synthetic service {service}"),
+                    vec![service],
+                ))
+            }
             "heapalloc" => self.heap_alloc(args.get(2).copied().unwrap_or(0), "HeapAlloc"),
             "localalloc" => self.heap_alloc(args.get(1).copied().unwrap_or(0), "LocalAlloc"),
             "globalalloc" => self.heap_alloc(args.get(1).copied().unwrap_or(0), "GlobalAlloc"),
+            "heapcreate" => {
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Heap {
+                        label: "private heap".into(),
+                    })
+                    .unwrap_or(0);
+                Ok((
+                    handle,
+                    "Created synthetic private heap".into(),
+                    vec![format!("0x{handle:08x}")],
+                ))
+            }
+            "heaprealloc" => {
+                let old = args.get(2).copied().unwrap_or(0);
+                let _ = self.memory.unmap(old);
+                self.heap_alloc(args.get(3).copied().unwrap_or(0), "HeapReAlloc")
+            }
             "heapfree" => self.heap_free(args.get(2).copied().unwrap_or(0), "HeapFree"),
             "localfree" => self.heap_free(args.first().copied().unwrap_or(0), "LocalFree"),
             "globalfree" => self.heap_free(args.first().copied().unwrap_or(0), "GlobalFree"),
-            "heapdestroy" => Ok((1, "Released synthetic heap handle".into(), hex_args())),
+            "heapdestroy" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let closed = self.windows.close(handle);
+                Ok((
+                    u32::from(closed),
+                    "Released synthetic heap handle".into(),
+                    hex_args(),
+                ))
+            }
             "virtualfree" => self.heap_free(args.first().copied().unwrap_or(0), "VirtualFree"),
             "getenvironmentvariablea" | "getenvironmentvariablew" => {
                 let wide = name.ends_with('w');
@@ -1315,6 +1482,164 @@ impl Machine {
                     written as u32,
                     format!("Returned synthetic environment variable {variable}"),
                     vec![variable, value.into()],
+                ))
+            }
+            "lstrlena" | "lstrlenw" | "strlen" => {
+                let pointer = args.first().copied().unwrap_or(0);
+                let length = if name.ends_with('w') {
+                    self.memory
+                        .read_wide_string(pointer, 4_096)
+                        .encode_utf16()
+                        .count()
+                } else {
+                    self.memory.read_c_string(pointer, 4_096).len()
+                };
+                Ok((
+                    length as u32,
+                    format!("Measured bounded string length {length}"),
+                    vec![length.to_string()],
+                ))
+            }
+            "lstrcpya" | "lstrcpyw" | "lstrcata" | "lstrcatw" => {
+                let destination = args.first().copied().unwrap_or(0);
+                let source = args.get(1).copied().unwrap_or(0);
+                let wide = name.ends_with('w');
+                let source_value = if wide {
+                    self.memory.read_wide_string(source, 4_096)
+                } else {
+                    self.memory.read_c_string(source, 4_096)
+                };
+                let value = if name.starts_with("lstrcat") {
+                    let current = if wide {
+                        self.memory.read_wide_string(destination, 4_096)
+                    } else {
+                        self.memory.read_c_string(destination, 4_096)
+                    };
+                    format!("{current}{source_value}")
+                } else {
+                    source_value
+                };
+                self.write_guest_string(destination, 4_096, &value, wide);
+                Ok((
+                    destination,
+                    "Copied bounded synthetic string".into(),
+                    vec![value],
+                ))
+            }
+            "multibytetowidechar" => {
+                let source = self
+                    .memory
+                    .read_c_string(args.get(2).copied().unwrap_or(0), 4_096);
+                let destination = args.get(4).copied().unwrap_or(0);
+                let capacity = args.get(5).copied().unwrap_or(0) as usize;
+                let written = self.write_guest_string(destination, capacity, &source, true);
+                Ok((
+                    written as u32,
+                    "Converted bounded ANSI string to UTF-16".into(),
+                    vec![source],
+                ))
+            }
+            "widechartomultibyte" => {
+                let source = self
+                    .memory
+                    .read_wide_string(args.get(2).copied().unwrap_or(0), 4_096);
+                let destination = args.get(4).copied().unwrap_or(0);
+                let capacity = args.get(5).copied().unwrap_or(0) as usize;
+                let written = self.write_guest_string(destination, capacity, &source, false);
+                Ok((
+                    written as u32,
+                    "Converted bounded UTF-16 string to ANSI".into(),
+                    vec![source],
+                ))
+            }
+            "rtlmovememory" | "memcpy" | "memmove" => {
+                let destination = args.first().copied().unwrap_or(0);
+                let source = args.get(1).copied().unwrap_or(0);
+                let length = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let data = self.memory.read(source, length)?.to_vec();
+                self.memory.write(destination, &data)?;
+                Ok((
+                    destination,
+                    format!("Copied {length} bounded memory bytes"),
+                    vec![format!("0x{source:08x}"), format!("0x{destination:08x}")],
+                ))
+            }
+            "rtlzeromemory" => {
+                let destination = args.first().copied().unwrap_or(0);
+                let length = args.get(1).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                self.memory.write(destination, &vec![0; length])?;
+                Ok((
+                    0,
+                    format!("Zeroed {length} bounded memory bytes"),
+                    vec![format!("0x{destination:08x}")],
+                ))
+            }
+            "memset" => {
+                let destination = args.first().copied().unwrap_or(0);
+                let value = args.get(1).copied().unwrap_or(0) as u8;
+                let length = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                self.memory.write(destination, &vec![value; length])?;
+                Ok((
+                    destination,
+                    format!("Set {length} bounded memory bytes"),
+                    vec![format!("0x{destination:08x}")],
+                ))
+            }
+            "strcmp" => {
+                let left = self
+                    .memory
+                    .read_c_string(args.first().copied().unwrap_or(0), 4_096);
+                let right = self
+                    .memory
+                    .read_c_string(args.get(1).copied().unwrap_or(0), 4_096);
+                let result = match left.as_bytes().cmp(right.as_bytes()) {
+                    std::cmp::Ordering::Less => -1i32,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                };
+                Ok((
+                    result as u32,
+                    "Compared two bounded strings".into(),
+                    vec![left, right],
+                ))
+            }
+            "interlockedincrement" | "interlockeddecrement" => {
+                let pointer = args.first().copied().unwrap_or(0);
+                let current = self.memory.read_u32(pointer)?;
+                let result = if name.ends_with("increment") {
+                    current.wrapping_add(1)
+                } else {
+                    current.wrapping_sub(1)
+                };
+                self.memory.write_u32(pointer, result)?;
+                Ok((
+                    result,
+                    "Updated synthetic interlocked value".into(),
+                    vec![result.to_string()],
+                ))
+            }
+            "interlockedexchange" => {
+                let pointer = args.first().copied().unwrap_or(0);
+                let current = self.memory.read_u32(pointer)?;
+                self.memory
+                    .write_u32(pointer, args.get(1).copied().unwrap_or(0))?;
+                Ok((
+                    current,
+                    "Exchanged synthetic interlocked value".into(),
+                    hex_args(),
+                ))
+            }
+            "interlockedcompareexchange" => {
+                let pointer = args.first().copied().unwrap_or(0);
+                let current = self.memory.read_u32(pointer)?;
+                if current == args.get(2).copied().unwrap_or(0) {
+                    self.memory
+                        .write_u32(pointer, args.get(1).copied().unwrap_or(0))?;
+                }
+                Ok((
+                    current,
+                    "Compared and exchanged synthetic interlocked value".into(),
+                    hex_args(),
                 ))
             }
             "isdebuggerpresent" => Ok((
@@ -1347,10 +1672,7 @@ impl Machine {
             }
             "openprocess" => {
                 let pid = args.get(2).copied().unwrap_or(0);
-                let handle = self
-                    .windows
-                    .allocate(HandleResource::Process { pid })
-                    .unwrap_or(0);
+                let handle = self.windows.open_process(pid).unwrap_or(0);
                 self.processes.push(ProcessEvent {
                     operation: "open".into(),
                     command: format!("pid:{pid}"),
@@ -1373,6 +1695,9 @@ impl Machine {
                 } else {
                     requested
                 };
+                let allocated =
+                    self.windows
+                        .allocate_remote(process_handle, address, size as usize);
                 self.injection.push(InjectionEvent {
                     operation: "allocate_remote".into(),
                     process_handle,
@@ -1381,7 +1706,7 @@ impl Machine {
                     preview: None,
                 });
                 Ok((
-                    address,
+                    if allocated { address } else { 0 },
                     format!(
                         "Allocated {size} synthetic remote bytes in process 0x{process_handle:08x}"
                     ),
@@ -1400,21 +1725,22 @@ impl Machine {
                     .memory
                     .read(args.get(2).copied().unwrap_or(0), length as usize)
                     .unwrap_or_default();
-                let preview = printable_preview(data);
+                let written = self.windows.write_remote(process_handle, address, data) as u32;
+                let preview = printable_preview(&data[..written as usize]);
                 if let Some(pointer) = args.get(4).copied().filter(|pointer| *pointer != 0) {
-                    let _ = self.memory.write_u32(pointer, length);
+                    let _ = self.memory.write_u32(pointer, written);
                 }
                 self.injection.push(InjectionEvent {
                     operation: "write_remote".into(),
                     process_handle,
                     address,
-                    size: length,
+                    size: written,
                     preview: Some(preview.clone()),
                 });
                 Ok((
-                    1,
+                    u32::from(written == length),
                     format!(
-                        "Captured {length} bytes written to remote process 0x{process_handle:08x}"
+                        "Captured {written} bytes written to remote process 0x{process_handle:08x}"
                     ),
                     vec![format!("0x{address:08x}"), preview],
                 ))
@@ -1571,6 +1897,37 @@ impl Machine {
                     vec![path],
                 ))
             }
+            "setfilepointer" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let distance = args.get(1).copied().unwrap_or(0) as i32;
+                let method = args.get(3).copied().unwrap_or(0);
+                let offset = self
+                    .windows
+                    .set_file_offset(handle, distance, method)
+                    .map(|value| value as u32)
+                    .unwrap_or(u32::MAX);
+                Ok((
+                    offset,
+                    format!("Moved virtual file pointer to {offset}"),
+                    vec![format!("0x{handle:08x}")],
+                ))
+            }
+            "getfilesize" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let size = self
+                    .windows
+                    .file_size(handle)
+                    .map(|value| value as u32)
+                    .unwrap_or(u32::MAX);
+                if let Some(high) = args.get(1).copied().filter(|pointer| *pointer != 0) {
+                    let _ = self.memory.write_u32(high, 0);
+                }
+                Ok((
+                    size,
+                    format!("Returned virtual file size {size}"),
+                    vec![format!("0x{handle:08x}")],
+                ))
+            }
             "deletefilea" | "deletefilew" => {
                 let pointer = args.first().copied().unwrap_or(0);
                 let path = if name.ends_with('w') {
@@ -1578,13 +1935,93 @@ impl Machine {
                 } else {
                     self.memory.read_c_string(pointer, 1_024)
                 };
+                let removed = self.windows.delete_file(&path);
                 self.filesystem.push(FileEvent {
                     operation: "delete".into(),
                     path: path.clone(),
                     size: None,
                     preview: None,
                 });
-                Ok((1, format!("Deleted virtual file {path}"), vec![path]))
+                Ok((
+                    u32::from(removed),
+                    format!("Deleted virtual file {path}"),
+                    vec![path],
+                ))
+            }
+            "copyfilea" | "copyfilew" | "movefilea" | "movefilew" => {
+                let wide = name.ends_with('w');
+                let source_pointer = args.first().copied().unwrap_or(0);
+                let destination_pointer = args.get(1).copied().unwrap_or(0);
+                let source = if wide {
+                    self.memory.read_wide_string(source_pointer, 1_024)
+                } else {
+                    self.memory.read_c_string(source_pointer, 1_024)
+                };
+                let destination = if wide {
+                    self.memory.read_wide_string(destination_pointer, 1_024)
+                } else {
+                    self.memory.read_c_string(destination_pointer, 1_024)
+                };
+                let moved = name.starts_with("move");
+                let success = if moved {
+                    self.windows.move_file(&source, &destination)
+                } else {
+                    self.windows.copy_file(&source, &destination)
+                };
+                self.filesystem.push(FileEvent {
+                    operation: if moved { "move".into() } else { "copy".into() },
+                    path: format!("{source} -> {destination}"),
+                    size: None,
+                    preview: None,
+                });
+                Ok((
+                    u32::from(success),
+                    format!(
+                        "{} virtual file {source} to {destination}",
+                        if moved { "Moved" } else { "Copied" }
+                    ),
+                    vec![source, destination],
+                ))
+            }
+            "createdirectorya" | "createdirectoryw" | "removedirectorya" | "removedirectoryw" => {
+                let pointer = args.first().copied().unwrap_or(0);
+                let path = if name.ends_with('w') {
+                    self.memory.read_wide_string(pointer, 1_024)
+                } else {
+                    self.memory.read_c_string(pointer, 1_024)
+                };
+                let create = name.starts_with("create");
+                self.filesystem.push(FileEvent {
+                    operation: if create {
+                        "create_directory".into()
+                    } else {
+                        "remove_directory".into()
+                    },
+                    path: path.clone(),
+                    size: None,
+                    preview: None,
+                });
+                Ok((
+                    1,
+                    format!(
+                        "{} virtual directory {path}",
+                        if create { "Created" } else { "Removed" }
+                    ),
+                    vec![path],
+                ))
+            }
+            "getfileattributesa" | "getfileattributesw" => {
+                let pointer = args.first().copied().unwrap_or(0);
+                let path = if name.ends_with('w') {
+                    self.memory.read_wide_string(pointer, 1_024)
+                } else {
+                    self.memory.read_c_string(pointer, 1_024)
+                };
+                Ok((
+                    0x80,
+                    format!("Returned synthetic normal-file attributes for {path}"),
+                    vec![path],
+                ))
             }
             "regopenkeyexa" | "regopenkeyexw" => {
                 let pointer = args.get(1).copied().unwrap_or(0);
@@ -2170,7 +2607,12 @@ impl Machine {
         let process_calls: Vec<_> = self
             .processes
             .iter()
-            .filter(|event| matches!(event.operation.as_str(), "execute" | "create"))
+            .filter(|event| {
+                matches!(
+                    event.operation.as_str(),
+                    "execute" | "create" | "shell_execute"
+                )
+            })
             .map(|event| event.command.clone())
             .collect();
         if !process_calls.is_empty() {
@@ -2244,6 +2686,42 @@ impl Machine {
                 severity: if wrote_remote && executed_remote { DynamicSeverity::High } else { DynamicSeverity::Medium },
                 rationale: "All remote process operations targeted synthetic address spaces and never reached a host process.".into(),
                 evidence: self.injection.iter().take(20).map(|event| format!("{} process 0x{:08x} address 0x{:08x} size {}", event.operation, event.process_handle, event.address, event.size)).collect(),
+            });
+        }
+        let mut persistence_evidence: Vec<String> = self
+            .persistence
+            .iter()
+            .map(|event| {
+                format!(
+                    "{} {} {}{}",
+                    event.mechanism,
+                    event.operation,
+                    event.target,
+                    event
+                        .value
+                        .as_ref()
+                        .map_or(String::new(), |value| format!(" -> {value}"))
+                )
+            })
+            .collect();
+        persistence_evidence.extend(
+            self.registry
+                .iter()
+                .filter(|event| {
+                    let key = event.key.to_ascii_lowercase();
+                    key.contains("\\currentversion\\run")
+                        || key.contains("\\currentversion\\runonce")
+                        || key.contains("\\services\\")
+                })
+                .map(|event| format!("registry {} {}", event.operation, event.key)),
+        );
+        if !persistence_evidence.is_empty() {
+            findings.push(DynamicFinding {
+                id: "persistence".into(),
+                title: "Persistence mechanism observed".into(),
+                severity: DynamicSeverity::High,
+                rationale: "The sample changed a synthetic persistence location or service. No host configuration was modified.".into(),
+                evidence: persistence_evidence.into_iter().take(20).collect(),
             });
         }
         if findings.is_empty() {
@@ -2405,6 +2883,7 @@ mod tests {
             network: Vec::new(),
             memory_events: Vec::new(),
             injection: Vec::new(),
+            persistence: Vec::new(),
             warnings: Vec::new(),
             termination: None,
             truncated: false,
@@ -2552,5 +3031,42 @@ mod tests {
         assert!(matches!(machine.termination, Some(Termination::Halted)));
         assert!(machine.instructions[0].text.starts_with("mov eax"));
         assert_eq!(machine.instructions.last().unwrap().address, 0x1100);
+    }
+
+    #[test]
+    fn models_runtime_string_memory_and_interlocked_helpers() {
+        let mut machine = machine_with_code(&[0xf4]);
+        machine.memory.write(0x3000, b"runtime\0").unwrap();
+        let (length, _, _) = machine.emulate_api("strlen", &[0x3000]).unwrap();
+        assert_eq!(length, 7);
+        machine.emulate_api("memcpy", &[0x3040, 0x3000, 8]).unwrap();
+        assert_eq!(machine.memory.read(0x3040, 8).unwrap(), b"runtime\0");
+        machine.memory.write_u32(0x3080, 41).unwrap();
+        let (value, _, _) = machine
+            .emulate_api("interlockedincrement", &[0x3080])
+            .unwrap();
+        assert_eq!(value, 42);
+        assert_eq!(machine.memory.read_u32(0x3080).unwrap(), 42);
+    }
+
+    #[test]
+    fn detects_synthetic_service_persistence() {
+        let mut machine = machine_with_code(&[0xf4]);
+        machine.memory.write(0x3000, b"AegisUpdater\0").unwrap();
+        machine
+            .memory
+            .write(0x3040, b"C:\\Temp\\updater.exe\0")
+            .unwrap();
+        let mut args = [0u32; 13];
+        args[1] = 0x3000;
+        args[7] = 0x3040;
+        machine.emulate_api("createservicea", &args).unwrap();
+        let finding = machine
+            .build_findings()
+            .into_iter()
+            .find(|finding| finding.id == "persistence")
+            .unwrap();
+        assert_eq!(finding.severity, DynamicSeverity::High);
+        assert!(finding.evidence[0].contains("AegisUpdater"));
     }
 }
