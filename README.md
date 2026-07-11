@@ -37,6 +37,9 @@ Dynamic reports currently include:
   shared mappings, named pipes, resources, and bounded SHA-256 crypto handles
 - Scripted DNS, TCP, WinINet, and WinHTTP responses with bounded redirects, typed
   exchanges, downloaded artifacts, YARA scanning, and synthetic-PCAP JSON export
+- Bounded API-level byte provenance from sample, network, registry, virtual-file,
+  and transformed data into process, executable-memory, persistence, network,
+  file, and remote-process sinks
 - Ordered behavior timeline and execution/API coverage metrics
 - Four deterministic Windows environment profiles with selectable single runs and
   a bounded profile-matrix comparison for environment-sensitive behavior

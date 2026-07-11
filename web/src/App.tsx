@@ -661,7 +661,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'network' | 'profiles'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'network' | 'provenance' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
@@ -723,6 +723,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
         <button className={view === 'threads' ? 'active' : ''} type="button" onClick={() => setView('threads')}>Threads ({report.threads.length})</button>
         <button className={view === 'system' ? 'active' : ''} type="button" onClick={() => setView('system')}>System objects ({report.system.length})</button>
         <button className={view === 'network' ? 'active' : ''} type="button" onClick={() => setView('network')}>Network ({report.network_exchanges.length})</button>
+        <button className={view === 'provenance' ? 'active' : ''} type="button" onClick={() => setView('provenance')}>Provenance ({report.provenance_flows.length})</button>
         {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
@@ -736,9 +737,16 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
       {view === 'threads' && <ThreadView report={report} />}
       {view === 'system' && <SystemView report={report} />}
       {view === 'network' && <NetworkView report={report} />}
+      {view === 'provenance' && <ProvenanceView report={report} />}
       {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
+}
+
+function ProvenanceView({ report }: { report: DynamicReport }) {
+  const sources = new Map(report.provenance_sources.map((source) => [source.id, source]))
+  if (!report.provenance_flows.length) return <EmptyState title="No provenance flows" text="No labeled sample, network, registry, file, or transformed bytes reached a modeled security-relevant sink." />
+  return <div className="generation-layout"><div className="stats-grid"><Stat label="Data sources" value={report.provenance_stats.source_count.toLocaleString()} detail="256 maximum" /><Stat label="Security sinks" value={report.provenance_stats.flow_count.toLocaleString()} detail="4,096 maximum" /><Stat label="Tracked ranges" value={report.provenance_stats.tracked_ranges.toLocaleString()} detail={report.provenance_stats.truncated ? 'Bound reached' : 'Bounded labels'} /></div><Section title="Explainable data flows" description="API-level provenance follows bounded byte ranges through modeled copies and transformations; it is evidence, not whole-program symbolic execution."><Table><thead><tr><th>#</th><th>Source</th><th>Flow</th><th>Destination</th><th>Bytes</th><th>API</th><th>Instruction</th></tr></thead><tbody>{report.provenance_flows.map((flow) => { const labels = flow.source_ids.map((id) => sources.get(id)).filter(Boolean); return <tr key={flow.sequence}><td>{flow.sequence + 1}</td><td>{labels.map((source) => <span className="tag" key={source!.id}>{source!.kind}: {source!.label}</span>)}</td><td><strong>{labels.map((source) => source!.kind).join(' + ')} → {flow.sink.replaceAll('_', ' ')}</strong></td><td><code>{flow.destination}</code></td><td>{formatBytes(flow.size)}</td><td><code>{flow.api}</code></td><td>{flow.instruction.toLocaleString()}</td></tr> })}</tbody></Table></Section><Section title="Tracked data sources" description="Derived sources preserve parent IDs so decoded, converted, or hashed buffers can be traced back to their inputs."><Table><thead><tr><th>ID</th><th>Kind</th><th>Label</th><th>Range</th><th>API</th><th>Parents</th></tr></thead><tbody>{report.provenance_sources.map((source) => <tr key={source.id}><td><code>{source.id}</code></td><td><span className="tag">{source.kind}</span></td><td>{source.label}</td><td><code>{formatOffset(source.address)} · {formatBytes(source.size)}</code></td><td><code>{source.api}</code></td><td><code>{source.parent_ids.join(', ') || '—'}</code></td></tr>)}</tbody></Table></Section></div>
 }
 
 function NetworkView({ report }: { report: DynamicReport }) {

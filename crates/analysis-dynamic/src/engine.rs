@@ -3,8 +3,9 @@ use crate::{
     DynamicOptions, DynamicReport, DynamicSeverity, ExceptionEvent, ExecutionCoverage,
     ExecutionDiagnostics, ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent,
     InstructionDiagnostic, InstructionEvent, MemoryEvent, NetworkEvent, NetworkExchange,
-    NetworkHeader, NetworkMode, PersistenceEvent, ProcessEvent, RegistryEvent, SystemEvent,
-    Termination, ThreadEvent, ThreadSummary, TimelineEvent,
+    NetworkHeader, NetworkMode, PersistenceEvent, ProcessEvent, ProvenanceSinkKind,
+    ProvenanceSourceKind, RegistryEvent, SystemEvent, Termination, ThreadEvent, ThreadSummary,
+    TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
     cpu::Cpu,
@@ -12,6 +13,7 @@ use crate::{
     loader::{self, ApiImport, STACK_TOP},
     memory::{Memory, Permissions},
     network::NetworkRuntime,
+    provenance::ProvenanceTracker,
     windows::{HandleResource, VirtualWindows},
 };
 use iced_x86::{Code, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind};
@@ -106,6 +108,15 @@ pub(crate) fn run(
         fs_base: TEB_BASE,
         ..Cpu::default()
     };
+    let mut provenance = ProvenanceTracker::default();
+    provenance.source(
+        ProvenanceSourceKind::Sample,
+        "loaded PE image",
+        loaded.image_base,
+        loaded.image_size as usize,
+        "loader",
+        0,
+    );
     let mut machine = Machine {
         cpu: main_cpu.clone(),
         memory: loaded.memory,
@@ -161,6 +172,8 @@ pub(crate) fn run(
         first_unsupported: None,
         invalid_instruction_count: 0,
         network_runtime: NetworkRuntime::new(network_scenario),
+        provenance,
+        crypto_inputs: BTreeMap::new(),
     };
     machine.start_execution()?;
     machine.execute();
@@ -174,6 +187,7 @@ pub(crate) fn run(
         .unwrap_or(Termination::InstructionLimit);
     let (artifact_summaries, artifact_stats, artifact_blobs) = machine.artifacts.finish();
     let (payload_generations, generation_stats) = machine.generations.finish();
+    let (provenance_sources, provenance_flows, provenance_stats) = machine.provenance.finish();
     for artifact in &artifact_summaries {
         if artifact.detected_format != "unknown"
             || artifact
@@ -230,6 +244,9 @@ pub(crate) fn run(
         registry: machine.registry,
         network: machine.network,
         network_exchanges: machine.network_exchanges,
+        provenance_sources,
+        provenance_flows,
+        provenance_stats,
         memory: machine.memory_events,
         injection: machine.injection,
         persistence: machine.persistence,
@@ -314,6 +331,8 @@ struct Machine {
     first_unsupported: Option<InstructionDiagnostic>,
     invalid_instruction_count: usize,
     network_runtime: NetworkRuntime,
+    provenance: ProvenanceTracker,
+    crypto_inputs: BTreeMap<u32, (u32, usize)>,
 }
 
 #[derive(Clone)]
@@ -2395,9 +2414,16 @@ impl Machine {
                 ))
             }
             "winexec" => {
-                let command = self
-                    .memory
-                    .read_c_string(args.first().copied().unwrap_or(0), 2_048);
+                let pointer = args.first().copied().unwrap_or(0);
+                let command = self.memory.read_c_string(pointer, 2_048);
+                self.provenance.observe(
+                    pointer,
+                    command.len().saturating_add(1),
+                    ProvenanceSinkKind::ProcessCommand,
+                    command.clone(),
+                    "WinExec",
+                    self.instruction_count,
+                );
                 self.processes.push(ProcessEvent {
                     operation: "execute".into(),
                     command: command.clone(),
@@ -2422,6 +2448,18 @@ impl Machine {
                 } else {
                     self.memory.read_c_string(pointer, 2_048)
                 };
+                self.provenance.observe(
+                    pointer,
+                    if name.ends_with('w') {
+                        command.encode_utf16().count().saturating_add(1) * 2
+                    } else {
+                        command.len().saturating_add(1)
+                    },
+                    ProvenanceSinkKind::ProcessCommand,
+                    command.clone(),
+                    name,
+                    self.instruction_count,
+                );
                 self.processes.push(ProcessEvent {
                     operation: "create".into(),
                     command: command.clone(),
@@ -2448,6 +2486,23 @@ impl Machine {
                     self.memory.read_c_string(parameters_pointer, 2_048)
                 };
                 let command = format!("{file} {parameters}").trim().to_owned();
+                let unit = if wide { 2 } else { 1 };
+                self.provenance.observe(
+                    file_pointer,
+                    file.len().saturating_add(1) * unit,
+                    ProvenanceSinkKind::ProcessCommand,
+                    command.clone(),
+                    name,
+                    self.instruction_count,
+                );
+                self.provenance.observe(
+                    parameters_pointer,
+                    parameters.len().saturating_add(1) * unit,
+                    ProvenanceSinkKind::ProcessCommand,
+                    command.clone(),
+                    name,
+                    self.instruction_count,
+                );
                 self.processes.push(ProcessEvent {
                     operation: "shell_execute".into(),
                     command: command.clone(),
@@ -2505,6 +2560,18 @@ impl Machine {
                 } else {
                     self.memory.read_c_string(binary_pointer, 2_048)
                 };
+                self.provenance.observe(
+                    binary_pointer,
+                    if wide {
+                        binary.encode_utf16().count().saturating_add(1) * 2
+                    } else {
+                        binary.len().saturating_add(1)
+                    },
+                    ProvenanceSinkKind::Persistence,
+                    format!("service {service}"),
+                    name,
+                    self.instruction_count,
+                );
                 let handle = self
                     .windows
                     .allocate(HandleResource::Service {
@@ -2663,12 +2730,21 @@ impl Machine {
                 ))
             }
             "multibytetowidechar" => {
-                let source = self
-                    .memory
-                    .read_c_string(args.get(2).copied().unwrap_or(0), 4_096);
+                let source_pointer = args.get(2).copied().unwrap_or(0);
+                let source = self.memory.read_c_string(source_pointer, 4_096);
                 let destination = args.get(4).copied().unwrap_or(0);
                 let capacity = args.get(5).copied().unwrap_or(0) as usize;
                 let written = self.write_guest_string(destination, capacity, &source, true);
+                if written > 0 {
+                    self.provenance.derive(
+                        source_pointer,
+                        destination,
+                        written.saturating_add(1) * 2,
+                        "ANSI to UTF-16 conversion",
+                        "MultiByteToWideChar",
+                        self.instruction_count,
+                    );
+                }
                 Ok((
                     written as u32,
                     "Converted bounded ANSI string to UTF-16".into(),
@@ -2676,12 +2752,21 @@ impl Machine {
                 ))
             }
             "widechartomultibyte" => {
-                let source = self
-                    .memory
-                    .read_wide_string(args.get(2).copied().unwrap_or(0), 4_096);
+                let source_pointer = args.get(2).copied().unwrap_or(0);
+                let source = self.memory.read_wide_string(source_pointer, 4_096);
                 let destination = args.get(4).copied().unwrap_or(0);
                 let capacity = args.get(5).copied().unwrap_or(0) as usize;
                 let written = self.write_guest_string(destination, capacity, &source, false);
+                if written > 0 {
+                    self.provenance.derive(
+                        source_pointer,
+                        destination,
+                        written.saturating_add(1),
+                        "UTF-16 to ANSI conversion",
+                        "WideCharToMultiByte",
+                        self.instruction_count,
+                    );
+                }
                 Ok((
                     written as u32,
                     "Converted bounded UTF-16 string to ANSI".into(),
@@ -2694,6 +2779,7 @@ impl Machine {
                 let length = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
                 let data = self.memory.read(source, length)?.to_vec();
                 self.memory.write(destination, &data)?;
+                self.provenance.propagate(source, destination, length);
                 Ok((
                     destination,
                     format!("Copied {length} bounded memory bytes"),
@@ -2704,6 +2790,7 @@ impl Machine {
                 let destination = args.first().copied().unwrap_or(0);
                 let length = args.get(1).copied().unwrap_or(0).min(1024 * 1024) as usize;
                 self.memory.write(destination, &vec![0; length])?;
+                self.provenance.clear(destination, length);
                 Ok((
                     0,
                     format!("Zeroed {length} bounded memory bytes"),
@@ -2715,6 +2802,7 @@ impl Machine {
                 let value = args.get(1).copied().unwrap_or(0) as u8;
                 let length = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
                 self.memory.write(destination, &vec![value; length])?;
+                self.provenance.clear(destination, length);
                 Ok((
                     destination,
                     format!("Set {length} bounded memory bytes"),
@@ -2915,9 +3003,10 @@ impl Machine {
                 let process_handle = args.first().copied().unwrap_or(0);
                 let address = args.get(1).copied().unwrap_or(0);
                 let length = args.get(3).copied().unwrap_or(0).min(65_536);
+                let source_pointer = args.get(2).copied().unwrap_or(0);
                 let data = self
                     .memory
-                    .read(args.get(2).copied().unwrap_or(0), length as usize)
+                    .read(source_pointer, length as usize)
                     .unwrap_or_default();
                 let written = self.windows.write_remote(process_handle, address, data) as u32;
                 let preview = printable_preview(&data[..written as usize]);
@@ -2931,6 +3020,14 @@ impl Machine {
                     size: written,
                     preview: Some(preview.clone()),
                 });
+                self.provenance.observe(
+                    source_pointer,
+                    written as usize,
+                    ProvenanceSinkKind::RemoteProcess,
+                    format!("process 0x{process_handle:08x} at 0x{address:08x}"),
+                    "WriteProcessMemory",
+                    self.instruction_count,
+                );
                 Ok((
                     u32::from(written == length),
                     format!(
@@ -3033,9 +3130,10 @@ impl Machine {
             "writefile" => {
                 let file_handle = args.first().copied().unwrap_or(0);
                 let requested = args.get(2).copied().unwrap_or(0).min(65_536);
+                let source_pointer = args.get(1).copied().unwrap_or(0);
                 let data = self
                     .memory
-                    .read(args.get(1).copied().unwrap_or(0), requested as usize)
+                    .read(source_pointer, requested as usize)
                     .unwrap_or_default();
                 let length = self.windows.write_file(file_handle, data) as u32;
                 let preview = printable_preview(&data[..length as usize]);
@@ -3052,6 +3150,16 @@ impl Machine {
                     size: Some(length),
                     preview: Some(preview.clone()),
                 });
+                self.provenance.observe(
+                    source_pointer,
+                    length as usize,
+                    ProvenanceSinkKind::VirtualFile,
+                    self.windows
+                        .file_path(file_handle)
+                        .unwrap_or("<virtual file>"),
+                    "WriteFile",
+                    self.instruction_count,
+                );
                 Ok((
                     1,
                     format!("Captured {length} bytes written to a virtual file"),
@@ -3068,8 +3176,9 @@ impl Machine {
                 let handle = args.first().copied().unwrap_or(0);
                 let requested = args.get(2).copied().unwrap_or(0).min(65_536) as usize;
                 let data = self.windows.read_file(handle, requested);
+                let output = args.get(1).copied().unwrap_or(0);
                 if !data.is_empty() {
-                    let _ = self.memory.write(args.get(1).copied().unwrap_or(0), &data);
+                    let _ = self.memory.write(output, &data);
                 }
                 if let Some(pointer) = args.get(3).copied().filter(|pointer| *pointer != 0) {
                     let _ = self.memory.write_u32(pointer, data.len() as u32);
@@ -3079,6 +3188,14 @@ impl Machine {
                     .file_path(handle)
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("handle:0x{handle:x}"));
+                self.provenance.source(
+                    ProvenanceSourceKind::VirtualFile,
+                    path.clone(),
+                    output,
+                    data.len(),
+                    "ReadFile",
+                    self.instruction_count,
+                );
                 self.filesystem.push(FileEvent {
                     operation: "read".into(),
                     path: path.clone(),
@@ -3316,16 +3433,24 @@ impl Machine {
                 let size_pointer = args.get(5).copied().unwrap_or(0);
                 let capacity = self.memory.read_u32(size_pointer).unwrap_or(0) as usize;
                 let written = data.len().min(capacity);
-                if let Some(data_pointer) = args.get(4).copied().filter(|pointer| *pointer != 0) {
-                    let _ = self.memory.write(data_pointer, &data[..written]);
-                }
-                if size_pointer != 0 {
-                    let _ = self.memory.write_u32(size_pointer, data.len() as u32);
-                }
                 let key = format!(
                     "{}\\{value_name}",
                     self.windows.registry_path(handle).unwrap_or("<invalid>")
                 );
+                if let Some(data_pointer) = args.get(4).copied().filter(|pointer| *pointer != 0) {
+                    let _ = self.memory.write(data_pointer, &data[..written]);
+                    self.provenance.source(
+                        ProvenanceSourceKind::Registry,
+                        key.clone(),
+                        data_pointer,
+                        written,
+                        name,
+                        self.instruction_count,
+                    );
+                }
+                if size_pointer != 0 {
+                    let _ = self.memory.write_u32(size_pointer, data.len() as u32);
+                }
                 self.registry.push(RegistryEvent {
                     operation: "query".into(),
                     key: key.clone(),
@@ -3405,6 +3530,18 @@ impl Machine {
                 } else {
                     self.memory.read_c_string(pointer, 2_048)
                 };
+                self.provenance.observe(
+                    pointer,
+                    if name.ends_with('w') {
+                        url.encode_utf16().count().saturating_add(1) * 2
+                    } else {
+                        url.len().saturating_add(1)
+                    },
+                    ProvenanceSinkKind::NetworkRequest,
+                    url.clone(),
+                    name,
+                    self.instruction_count,
+                );
                 let offline = self.environment.network_mode == NetworkMode::Offline;
                 if offline {
                     return Ok((
@@ -3433,6 +3570,16 @@ impl Machine {
                     .unwrap_or_default();
                 if output != 0 {
                     let _ = self.memory.write(output, &bytes);
+                    self.provenance.source(
+                        ProvenanceSourceKind::Network,
+                        self.windows
+                            .describe(handle)
+                            .unwrap_or_else(|| format!("HTTP handle 0x{handle:08x}")),
+                        output,
+                        bytes.len(),
+                        "InternetReadFile",
+                        self.instruction_count,
+                    );
                 }
                 if written != 0 {
                     let _ = self.memory.write_u32(written, bytes.len() as u32);
@@ -3548,6 +3695,16 @@ impl Machine {
                     .read(body_pointer, body_length)
                     .unwrap_or_default()
                     .to_vec();
+                self.provenance.observe(
+                    body_pointer,
+                    body.len(),
+                    ProvenanceSinkKind::NetworkRequest,
+                    self.windows
+                        .describe(handle)
+                        .unwrap_or_else(|| format!("WinHTTP handle 0x{handle:08x}")),
+                    "WinHttpSendRequest",
+                    self.instruction_count,
+                );
                 self.network_runtime.set_request(handle, headers, body);
                 Ok((
                     1,
@@ -3576,6 +3733,16 @@ impl Machine {
                     .unwrap_or_default();
                 if output != 0 {
                     let _ = self.memory.write(output, &bytes);
+                    self.provenance.source(
+                        ProvenanceSourceKind::Network,
+                        self.windows
+                            .describe(handle)
+                            .unwrap_or_else(|| format!("WinHTTP handle 0x{handle:08x}")),
+                        output,
+                        bytes.len(),
+                        "WinHttpReadData",
+                        self.instruction_count,
+                    );
                 }
                 if written != 0 {
                     let _ = self.memory.write_u32(written, bytes.len() as u32);
@@ -3814,6 +3981,14 @@ impl Machine {
                     .socket_destination(socket)
                     .unwrap_or_else(|| format!("socket:0x{socket:x}"));
                 let offline = self.environment.network_mode == NetworkMode::Offline;
+                self.provenance.observe(
+                    args.get(1).copied().unwrap_or(0),
+                    data.len(),
+                    ProvenanceSinkKind::NetworkRequest,
+                    destination.clone(),
+                    "send",
+                    self.instruction_count,
+                );
                 self.network.push(NetworkEvent {
                     operation: "send".into(),
                     destination: destination.clone(),
@@ -3870,13 +4045,21 @@ impl Machine {
                     .network_runtime
                     .recv_socket(socket, maximum)
                     .unwrap_or_default();
-                if output != 0 {
-                    let _ = self.memory.write(output, &bytes);
-                }
                 let destination = self
                     .network_runtime
                     .socket_destination(socket)
                     .unwrap_or_else(|| format!("socket:0x{socket:x}"));
+                if output != 0 {
+                    let _ = self.memory.write(output, &bytes);
+                    self.provenance.source(
+                        ProvenanceSourceKind::Network,
+                        destination.clone(),
+                        output,
+                        bytes.len(),
+                        "recv",
+                        self.instruction_count,
+                    );
+                }
                 self.network_exchanges.push(NetworkExchange {
                     sequence: self.network_exchanges.len() as u64,
                     protocol: "tcp".into(),
@@ -4327,6 +4510,9 @@ impl Machine {
                     .unwrap_or_default()
                     .to_vec();
                 let ok = self.windows.hash_update(handle, &data);
+                if ok {
+                    self.crypto_inputs.insert(handle, (pointer, length));
+                }
                 self.record_system(
                     "crypto",
                     "hash_data",
@@ -4351,6 +4537,17 @@ impl Machine {
                     .unwrap_or_default();
                 if output != 0 {
                     let _ = self.memory.write(output, &digest);
+                    if let Some((source, length)) = self.crypto_inputs.get(&handle).copied() {
+                        self.provenance.derive_sized(
+                            source,
+                            length,
+                            output,
+                            digest.len(),
+                            "SHA-256 digest",
+                            "CryptGetHashParam",
+                            self.instruction_count,
+                        );
+                    }
                 }
                 if size_pointer != 0 {
                     let _ = self.memory.write_u32(size_pointer, digest.len() as u32);
@@ -4589,6 +4786,14 @@ impl Machine {
                     permissions: permissions.display(),
                 });
                 if permissions.execute {
+                    self.provenance.observe(
+                        address,
+                        size,
+                        ProvenanceSinkKind::ExecutableMemory,
+                        format!("0x{address:08x} {}", permissions.display()),
+                        "VirtualProtect",
+                        self.instruction_count,
+                    );
                     self.capture_memory_region(
                         address,
                         "executable_allocation",
@@ -4922,6 +5127,18 @@ impl Machine {
         if !self.system.is_empty() {
             findings.push(DynamicFinding { id: "system-objects".into(), title: "Windows system-object activity observed".into(), severity: DynamicSeverity::Low, rationale: "Synchronization, enumeration, token, mapping, pipe, resource, and crypto APIs used bounded synthetic state only.".into(), evidence: self.system.iter().take(20).map(|event| format!("{} {} {}", event.category, event.operation, event.target)).collect() });
         }
+        let provenance_evidence = self.provenance.flow_evidence();
+        if !provenance_evidence.is_empty() {
+            findings.push(DynamicFinding {
+                id: "provenance-flow".into(),
+                title: "Security-relevant data flow observed".into(),
+                severity: DynamicSeverity::High,
+                rationale:
+                    "Labeled bytes reached a modeled security-relevant sink during emulation."
+                        .into(),
+                evidence: provenance_evidence,
+            });
+        }
         if findings.is_empty() {
             findings.push(DynamicFinding { id: "no-modeled-behavior".into(), title: "No modeled high-level behavior observed".into(), severity: DynamicSeverity::Info, rationale: "Execution may have completed, hit an unsupported instruction, or avoided the modeled APIs.".into(), evidence: vec![format!("{} instructions emulated", self.instruction_count)] });
         }
@@ -5123,6 +5340,8 @@ mod tests {
             first_unsupported: None,
             invalid_instruction_count: 0,
             network_runtime: NetworkRuntime::new(crate::NetworkScenario::default()),
+            provenance: ProvenanceTracker::default(),
+            crypto_inputs: BTreeMap::new(),
         }
     }
 

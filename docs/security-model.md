@@ -71,6 +71,9 @@ Dynamic analysis:
   per response, 4 MiB total response bytes, 64 headers, and three redirect hops
 - Scripted downloads enter the existing 4 MiB artifact boundary; reports and
   synthetic-PCAP JSON contain metadata and previews, never response body bytes
+- Provenance tracking retains at most 256 sources, 4,096 labeled ranges, 4,096
+  security-relevant flows, and eight source labels per range; it stores labels
+  and metadata rather than another copy of guest bytes
 - 4 MiB per synthetic remote-memory region and 16 MiB total remote-process memory
 - A bounded synthetic PEB/TEB and process environment that reveal no host values
 - Guest SEH chains dispatch at most 16 handlers per exception and retain at most 128
@@ -134,6 +137,10 @@ encrypted, self-modifying, multi-process, kernel-mode, environment-dependent,
 or runtime-downloaded behavior may be missed. The current interpreter is not a
 complete x86 CPU or Windows implementation; a sample can evade or simply exceed
 its supported surface.
+
+Provenance is intentionally API-level and follows modeled range writes, copies,
+conversions, and crypto outputs. It is not whole-CPU taint propagation or symbolic
+execution, so unmodeled instruction-only transformations can break a data-flow chain.
 
 Full guest-OS virtualization is outside this product boundary. Adding an API is
 acceptable only when its implementation remains deterministic and cannot reach

@@ -9,6 +9,7 @@ mod loader;
 mod memory;
 mod model;
 mod network;
+mod provenance;
 mod windows;
 
 pub use model::*;
@@ -122,7 +123,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 10);
+        assert_eq!(report.schema_version, 11);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -372,6 +373,12 @@ mod tests {
             Termination::ExitProcess { code: 0 }
         ));
         assert_eq!(analysis.report.network_exchanges.len(), 2);
+        assert!(analysis.report.provenance_sources.iter().any(|source| {
+            source.kind == ProvenanceSourceKind::Network && source.api == "InternetReadFile"
+        }));
+        assert!(analysis.report.provenance_flows.iter().any(|flow| {
+            flow.sink == ProvenanceSinkKind::ProcessCommand && flow.api == "WinExec"
+        }));
         assert_eq!(
             analysis.report.network_exchanges[0].response_status,
             Some(302)

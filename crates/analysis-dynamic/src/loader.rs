@@ -22,6 +22,7 @@ pub struct ApiImport {
 pub struct LoadedImage {
     pub memory: Memory,
     pub image_base: u32,
+    pub image_size: u32,
     pub entry_point: u32,
     pub imports: BTreeMap<u32, ApiImport>,
     pub warnings: Vec<String>,
@@ -142,6 +143,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, DynamicError> {
     Ok(LoadedImage {
         memory,
         image_base,
+        image_size: optional.windows_fields.size_of_image,
         entry_point,
         imports,
         warnings,

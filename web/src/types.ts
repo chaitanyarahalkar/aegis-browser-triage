@@ -132,6 +132,10 @@ export interface DynamicNetworkEvent {
 }
 export interface DynamicNetworkHeader { name: string; value: string }
 export interface DynamicNetworkExchange { sequence: number; protocol: string; operation: string; destination: string; request_headers: DynamicNetworkHeader[]; request_preview: string | null; request_size: number; request_sha256: string | null; response_status: number | null; response_headers: DynamicNetworkHeader[]; response_size: number; response_sha256: string | null; artifact_id: string | null; outcome: string }
+export type DynamicProvenanceSourceKind = 'sample' | 'network' | 'registry' | 'virtual_file' | 'transformation'
+export type DynamicProvenanceSinkKind = 'executable_memory' | 'process_command' | 'persistence' | 'network_request' | 'remote_process' | 'virtual_file'
+export interface DynamicProvenanceSource { id: string; kind: DynamicProvenanceSourceKind; label: string; address: number; size: number; api: string; instruction: number; parent_ids: string[] }
+export interface DynamicProvenanceFlow { sequence: number; source_ids: string[]; sink: DynamicProvenanceSinkKind; destination: string; address: number; size: number; api: string; instruction: number }
 
 export interface DynamicMemoryEvent {
   operation: string
@@ -254,6 +258,9 @@ export interface DynamicReport {
   registry: DynamicRegistryEvent[]
   network: DynamicNetworkEvent[]
   network_exchanges: DynamicNetworkExchange[]
+  provenance_sources: DynamicProvenanceSource[]
+  provenance_flows: DynamicProvenanceFlow[]
+  provenance_stats: { source_count: number; flow_count: number; tracked_ranges: number; truncated: boolean }
   memory: DynamicMemoryEvent[]
   injection: DynamicInjectionEvent[]
   persistence: DynamicPersistenceEvent[]

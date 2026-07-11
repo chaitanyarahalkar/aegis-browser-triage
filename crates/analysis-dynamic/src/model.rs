@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 10;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 11;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -318,6 +318,9 @@ pub struct DynamicReport {
     pub registry: Vec<RegistryEvent>,
     pub network: Vec<NetworkEvent>,
     pub network_exchanges: Vec<NetworkExchange>,
+    pub provenance_sources: Vec<ProvenanceSource>,
+    pub provenance_flows: Vec<ProvenanceFlow>,
+    pub provenance_stats: ProvenanceStats,
     pub memory: Vec<MemoryEvent>,
     pub injection: Vec<InjectionEvent>,
     pub persistence: Vec<PersistenceEvent>,
@@ -363,6 +366,59 @@ pub struct NetworkExchange {
     pub response_sha256: Option<String>,
     pub artifact_id: Option<String>,
     pub outcome: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceSourceKind {
+    Sample,
+    Network,
+    Registry,
+    VirtualFile,
+    Transformation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceSinkKind {
+    ExecutableMemory,
+    ProcessCommand,
+    Persistence,
+    NetworkRequest,
+    RemoteProcess,
+    VirtualFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvenanceSource {
+    pub id: String,
+    pub kind: ProvenanceSourceKind,
+    pub label: String,
+    pub address: u32,
+    pub size: u64,
+    pub api: String,
+    pub instruction: u64,
+    pub parent_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvenanceFlow {
+    pub sequence: u64,
+    pub source_ids: Vec<String>,
+    pub sink: ProvenanceSinkKind,
+    pub destination: String,
+    pub address: u32,
+    pub size: u64,
+    pub api: String,
+    pub instruction: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProvenanceStats {
+    pub source_count: usize,
+    pub flow_count: usize,
+    pub tracked_ranges: usize,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
