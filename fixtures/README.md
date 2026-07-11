@@ -11,6 +11,10 @@ value, a scripted WinINet download, provenance flows, a guest thread, and a
 vectored exception handler. Neither fixture is executed natively or given access
 to browser or host resources.
 
+`aegis-safe-code-analysis-pe64.exe` is a harmless static-analysis demo with two
+branch paths, two direct helper calls, a converging control-flow graph, and inert
+process/network strings. It remains valid under the bounded dynamic interpreter.
+
 `aegis-safe-unpacking-pe64.exe` copies an inert MZ-marked byte block into synthetic
 heap memory, changes only guest permissions, resolves emulator-owned exports through
 both Win32 and `Ldr*` paths, executes a tiny safe stage, and exits. It exists to test
