@@ -83,6 +83,8 @@ Dynamic analysis:
   bounded metadata, and raw-byte export requires a per-artifact confirmation
 - Unsupported instructions and invalid reads, writes, or execution become
   structured termination reasons
+- SSE2 state is limited to eight 128-bit guest registers and x87 state to an
+  eight-value stack; unsupported encodings retain only bounded nearby trace context
 
 YARA analysis:
 

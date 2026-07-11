@@ -202,6 +202,19 @@ export default function App() {
     }
   }, [inspectFile])
 
+  const analyzeInstructionsDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-instructions-pe32.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Instruction fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Instruction fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
   const runDynamicAnalysis = useCallback(async () => {
     if (!currentFile) return
     const run = ++dynamicRun.current
@@ -332,6 +345,7 @@ export default function App() {
               analyzeArtifactDemo={analyzeArtifactDemo}
               analyzeSehDemo={analyzeSehDemo}
               analyzeThreadsDemo={analyzeThreadsDemo}
+              analyzeInstructionsDemo={analyzeInstructionsDemo}
             />
             <div className="privacy-row">
               <span>No uploads</span>
@@ -399,7 +413,7 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
@@ -408,6 +422,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
   analyzeArtifactDemo: () => Promise<void>
   analyzeSehDemo: () => Promise<void>
   analyzeThreadsDemo: () => Promise<void>
+  analyzeInstructionsDemo: () => Promise<void>
 }) {
   return (
     <div
@@ -432,6 +447,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeSehDemo()}>Use SEH demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeThreadsDemo()}>Use threads demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzeInstructionsDemo()}>Use instruction demo</button>
       </div>
       <input
         ref={inputRef}
@@ -770,7 +786,8 @@ function CoverageView({ report }: { report: DynamicReport }) {
   const coverage = report.coverage
   const total = coverage.modeled_api_calls + coverage.unmodeled_api_calls
   const modeledPercent = total === 0 ? 100 : coverage.modeled_api_calls / total * 100
-  return <div className="coverage-layout"><div className="stats-grid"><Stat label="Unique code addresses" value={coverage.unique_instruction_addresses.toLocaleString()} detail={`${report.instruction_count.toLocaleString()} instructions executed`} /><Stat label="Unique APIs" value={coverage.unique_api_names.toLocaleString()} detail={`${coverage.dynamic_api_resolutions} dynamically resolved`} /><Stat label="Modeled API coverage" value={`${modeledPercent.toFixed(1)}%`} detail={`${coverage.unmodeled_api_calls} conservative fallbacks`} /></div><Section title="Interpretation limits" description="Coverage describes this emulation path, not every path in the binary."><dl className="limits-list"><div><dt>Trace records</dt><dd>{report.instructions.length.toLocaleString()}</dd></div><div><dt>Report truncated</dt><dd>{report.truncated ? 'Yes' : 'No'}</dd></div><div><dt>Termination</dt><dd>{terminationLabel(report.termination)}</dd></div><div><dt>Schema</dt><dd>Dynamic v{report.schema_version}</dd></div></dl></Section></div>
+  const diagnostic = report.diagnostics.first_unsupported
+  return <div className="coverage-layout"><div className="stats-grid"><Stat label="Unique code addresses" value={coverage.unique_instruction_addresses.toLocaleString()} detail={`${report.instruction_count.toLocaleString()} instructions executed`} /><Stat label="Unique APIs" value={coverage.unique_api_names.toLocaleString()} detail={`${coverage.dynamic_api_resolutions} dynamically resolved`} /><Stat label="Modeled API coverage" value={`${modeledPercent.toFixed(1)}%`} detail={`${coverage.unmodeled_api_calls} conservative fallbacks`} /></div><Section title="Interpretation limits" description="Coverage describes this emulation path, not every path in the binary."><dl className="limits-list"><div><dt>Trace records</dt><dd>{report.instructions.length.toLocaleString()}</dd></div><div><dt>Invalid encodings</dt><dd>{report.diagnostics.invalid_instruction_count.toLocaleString()}</dd></div><div><dt>Report truncated</dt><dd>{report.truncated ? 'Yes' : 'No'}</dd></div><div><dt>Termination</dt><dd>{terminationLabel(report.termination)}</dd></div><div><dt>Schema</dt><dd>Dynamic v{report.schema_version}</dd></div></dl></Section>{diagnostic && <Section title="First unsupported instruction" description="Bounded decoder context around the point where emulation stopped."><div className="diagnostic-card"><strong>{diagnostic.instruction}</strong><code>{formatOffset(diagnostic.address)} · {diagnostic.bytes}</code><div className="evidence">{diagnostic.nearby_trace.map((event) => <code key={event.index}>{formatOffset(event.address)} {event.text}</code>)}</div></div></Section>}</div>
 }
 
 function BehaviorView({ report }: { report: DynamicReport }) {

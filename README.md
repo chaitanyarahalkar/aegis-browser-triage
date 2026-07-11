@@ -27,6 +27,9 @@ Dynamic reports currently include:
   minimal PEB/TEB, stack, and guest memory
 - Bounded instruction traces and termination reasons
 - Expanded integer, conditional, flag, loop, and repeated string instructions
+- Bit-test/scan, atomic exchange, double-shift, SSE2 move/logic/scalar arithmetic,
+  and bounded basic x87 stack execution
+- Nearby trace and byte diagnostics for malformed or still-unsupported instructions
 - Typed Windows API signatures, ANSI/UTF-16 arguments, and deterministic virtual time
 - Stateful synthetic handles, files, registry values, processes, DNS, sockets,
   HTTP sessions, heaps, environment, and memory

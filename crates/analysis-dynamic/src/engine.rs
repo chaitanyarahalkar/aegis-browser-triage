@@ -1,9 +1,10 @@
 use crate::{
     ApiEvent, ArtifactKind, ArtifactOrigin, DynamicAnalysis, DynamicError, DynamicFinding,
     DynamicOptions, DynamicReport, DynamicSeverity, ExceptionEvent, ExecutionCoverage,
-    ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent, InstructionEvent,
-    MemoryEvent, NetworkEvent, NetworkMode, PersistenceEvent, ProcessEvent, RegistryEvent,
-    Termination, ThreadEvent, ThreadSummary, TimelineEvent,
+    ExecutionDiagnostics, ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent,
+    InstructionDiagnostic, InstructionEvent, MemoryEvent, NetworkEvent, NetworkMode,
+    PersistenceEvent, ProcessEvent, RegistryEvent, Termination, ThreadEvent, ThreadSummary,
+    TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
     cpu::Cpu,
@@ -151,6 +152,8 @@ pub(crate) fn run(
         current_thread: 0,
         thread_exit_requested: None,
         next_thread_switch: THREAD_QUANTUM,
+        first_unsupported: None,
+        invalid_instruction_count: 0,
     };
     machine.start_execution()?;
     machine.execute();
@@ -241,6 +244,10 @@ pub(crate) fn run(
             unmodeled_api_calls: machine.unmodeled_api_calls,
             dynamic_api_resolutions: machine.dynamic_api_resolutions,
         },
+        diagnostics: ExecutionDiagnostics {
+            first_unsupported: machine.first_unsupported,
+            invalid_instruction_count: machine.invalid_instruction_count,
+        },
         findings,
         warnings: machine.warnings,
         truncated: machine.truncated,
@@ -293,6 +300,8 @@ struct Machine {
     current_thread: usize,
     thread_exit_requested: Option<u32>,
     next_thread_switch: u64,
+    first_unsupported: Option<InstructionDiagnostic>,
+    invalid_instruction_count: usize,
 }
 
 #[derive(Clone)]
@@ -406,6 +415,12 @@ impl Machine {
             let mut decoder = Decoder::with_ip(32, bytes, address as u64, DecoderOptions::NONE);
             let instruction = decoder.decode();
             if instruction.code() == Code::INVALID {
+                self.invalid_instruction_count = self.invalid_instruction_count.saturating_add(1);
+                self.record_instruction_diagnostic(
+                    address,
+                    "invalid or malformed instruction encoding".into(),
+                    hex::encode(bytes),
+                );
                 let fallback = Termination::InvalidInstruction { address };
                 if !self.dispatch_exception(
                     0xc000_001d,
@@ -444,6 +459,11 @@ impl Machine {
                     }
                     _ => {
                         self.warnings.push(error.to_string());
+                        let bytes = self
+                            .instructions
+                            .last()
+                            .map_or_else(String::new, |event| event.bytes.clone());
+                        self.record_instruction_diagnostic(address, instruction.to_string(), bytes);
                         Termination::UnsupportedInstruction {
                             address,
                             instruction: instruction.to_string(),
@@ -489,6 +509,28 @@ impl Machine {
             vectored_index: (!self.vectored_handlers.is_empty()).then_some(0),
         };
         self.begin_exception_handler(pending)
+    }
+
+    fn record_instruction_diagnostic(&mut self, address: u32, instruction: String, bytes: String) {
+        if self.first_unsupported.is_some() {
+            return;
+        }
+        let nearby_trace = self
+            .instructions
+            .iter()
+            .rev()
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        self.first_unsupported = Some(InstructionDiagnostic {
+            address,
+            instruction,
+            bytes,
+            nearby_trace,
+        });
     }
 
     fn save_current_thread(&mut self) {
@@ -1049,6 +1091,7 @@ impl Machine {
             Inc | Dec => self.increment(instruction)?,
             Neg | Not => self.unary(instruction)?,
             Shl | Sal | Shr | Sar | Rol | Ror => self.shift(instruction)?,
+            Shld | Shrd => self.double_shift(instruction)?,
             Imul => self.imul(instruction)?,
             Mul => self.mul(instruction)?,
             Div | Idiv => self.divide(instruction)?,
@@ -1059,6 +1102,33 @@ impl Machine {
                     .write_operand(&mut self.memory, instruction, 0, right)?;
                 self.cpu
                     .write_operand(&mut self.memory, instruction, 1, left)?;
+            }
+            Bt | Btc | Btr | Bts => self.bit_operation(instruction)?,
+            Bsf | Bsr => self.bit_scan(instruction)?,
+            Cmpxchg => self.compare_exchange(instruction)?,
+            Xadd => self.exchange_add(instruction)?,
+            Lahf => self
+                .cpu
+                .write_register(iced_x86::Register::AH, self.cpu.flags_value() & 0xff)?,
+            Sahf => {
+                let ah = self.cpu.read_register(iced_x86::Register::AH)?;
+                self.cpu
+                    .set_flags_value((self.cpu.flags_value() & !0xff) | ah);
+            }
+            Movdqu | Movdqa | Movups | Movaps => self.vector_move(instruction, 16)?,
+            Movq => self.vector_move(instruction, 8)?,
+            Movd => self.movd(instruction)?,
+            Pxor | Xorps | Xorpd | Pand | Andps | Andpd | Por | Orps | Orpd => {
+                self.vector_logic(instruction)?
+            }
+            Addss | Subss | Mulss | Divss | Sqrtss => self.scalar_float(instruction, false)?,
+            Addsd | Subsd | Mulsd | Divsd | Sqrtsd => self.scalar_float(instruction, true)?,
+            Fld1 => self.cpu.x87_push(1.0)?,
+            Fldz => self.cpu.x87_push(0.0)?,
+            Fld | Fild => self.x87_load(instruction)?,
+            Fst | Fstp => self.x87_store(instruction, instruction.mnemonic() == Fstp)?,
+            Fadd | Faddp | Fsub | Fsubp | Fmul | Fmulp | Fdiv | Fdivp => {
+                self.x87_arithmetic(instruction)?
             }
             Jmp => self.cpu.eip = self.branch_target(instruction, 0)?,
             Je | Jne | Ja | Jae | Jb | Jbe | Jg | Jge | Jl | Jle | Js | Jns | Jo | Jno | Jp
@@ -1197,6 +1267,283 @@ impl Machine {
         }
         self.cpu
             .write_operand(&mut self.memory, instruction, 0, result)?;
+        Ok(())
+    }
+
+    fn bit_operation(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        let (value, size) = self.cpu.read_operand(&self.memory, instruction, 0)?;
+        let (index, _) = self.cpu.read_operand(&self.memory, instruction, 1)?;
+        let bit = index % size;
+        let mask = 1u32 << bit;
+        self.cpu.cf = value & mask != 0;
+        let result = match instruction.mnemonic() {
+            Mnemonic::Btc => value ^ mask,
+            Mnemonic::Btr => value & !mask,
+            Mnemonic::Bts => value | mask,
+            _ => return Ok(()),
+        };
+        self.cpu
+            .write_operand(&mut self.memory, instruction, 0, result)?;
+        Ok(())
+    }
+
+    fn bit_scan(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        let (source, size) = self.cpu.read_operand(&self.memory, instruction, 1)?;
+        let source = source & crate::cpu::bit_mask(size);
+        self.cpu.zf = source == 0;
+        if source != 0 {
+            let index = if instruction.mnemonic() == Mnemonic::Bsf {
+                source.trailing_zeros()
+            } else {
+                31 - source.leading_zeros()
+            };
+            self.cpu
+                .write_operand(&mut self.memory, instruction, 0, index)?;
+        }
+        Ok(())
+    }
+
+    fn double_shift(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        let (destination, size) = self.cpu.read_operand(&self.memory, instruction, 0)?;
+        let (source, _) = self.cpu.read_operand(&self.memory, instruction, 1)?;
+        let (count, _) = self.cpu.read_operand(&self.memory, instruction, 2)?;
+        let count = count & 0x1f;
+        if count == 0 {
+            return Ok(());
+        }
+        let width = size.min(32);
+        if count >= width {
+            return Err(DynamicError::UnsupportedOperand(format!(
+                "double shift count {count} for {width}-bit operand"
+            )));
+        }
+        let result = if instruction.mnemonic() == Mnemonic::Shld {
+            destination.wrapping_shl(count) | source.wrapping_shr(width - count)
+        } else {
+            destination.wrapping_shr(count) | source.wrapping_shl(width - count)
+        };
+        let carry = if instruction.mnemonic() == Mnemonic::Shld {
+            destination & (1 << (width - count)) != 0
+        } else {
+            destination & (1 << (count - 1)) != 0
+        };
+        self.cpu
+            .write_operand(&mut self.memory, instruction, 0, result)?;
+        self.cpu.set_logic_flags(result, size);
+        self.cpu.cf = carry;
+        Ok(())
+    }
+
+    fn compare_exchange(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        let (destination, size) = self.cpu.read_operand(&self.memory, instruction, 0)?;
+        let (source, _) = self.cpu.read_operand(&self.memory, instruction, 1)?;
+        let accumulator = self.cpu.eax & crate::cpu::bit_mask(size);
+        self.cpu.set_sub_flags(
+            accumulator,
+            destination,
+            accumulator.wrapping_sub(destination),
+            size,
+        );
+        if accumulator == destination {
+            self.cpu
+                .write_operand(&mut self.memory, instruction, 0, source)?;
+        } else {
+            match size {
+                8 => self
+                    .cpu
+                    .write_register(iced_x86::Register::AL, destination)?,
+                16 => self
+                    .cpu
+                    .write_register(iced_x86::Register::AX, destination)?,
+                _ => self.cpu.eax = destination,
+            }
+        }
+        Ok(())
+    }
+
+    fn exchange_add(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        let (destination, size) = self.cpu.read_operand(&self.memory, instruction, 0)?;
+        let (source, _) = self.cpu.read_operand(&self.memory, instruction, 1)?;
+        let result = destination.wrapping_add(source);
+        self.cpu
+            .write_operand(&mut self.memory, instruction, 0, result)?;
+        self.cpu
+            .write_operand(&mut self.memory, instruction, 1, destination)?;
+        self.cpu.set_add_flags(destination, source, result, size);
+        Ok(())
+    }
+
+    fn vector_move(&mut self, instruction: &Instruction, width: usize) -> Result<(), DynamicError> {
+        let value = self
+            .cpu
+            .read_vector_operand(&self.memory, instruction, 1, width)?;
+        self.cpu
+            .write_vector_operand(&mut self.memory, instruction, 0, &value[..width])
+    }
+
+    fn movd(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        if matches!(
+            instruction.op0_register(),
+            iced_x86::Register::XMM0
+                | iced_x86::Register::XMM1
+                | iced_x86::Register::XMM2
+                | iced_x86::Register::XMM3
+                | iced_x86::Register::XMM4
+                | iced_x86::Register::XMM5
+                | iced_x86::Register::XMM6
+                | iced_x86::Register::XMM7
+        ) {
+            let (value, _) = self.cpu.read_operand(&self.memory, instruction, 1)?;
+            let mut bytes = [0u8; 16];
+            bytes[..4].copy_from_slice(&value.to_le_bytes());
+            self.cpu
+                .write_vector_operand(&mut self.memory, instruction, 0, &bytes)
+        } else {
+            let value = self
+                .cpu
+                .read_vector_operand(&self.memory, instruction, 1, 4)?;
+            self.cpu.write_operand(
+                &mut self.memory,
+                instruction,
+                0,
+                u32::from_le_bytes(value[..4].try_into().unwrap()),
+            )?;
+            Ok(())
+        }
+    }
+
+    fn vector_logic(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        let left = self
+            .cpu
+            .read_vector_operand(&self.memory, instruction, 0, 16)?;
+        let right = self
+            .cpu
+            .read_vector_operand(&self.memory, instruction, 1, 16)?;
+        let mut result = [0u8; 16];
+        for index in 0..16 {
+            result[index] = match instruction.mnemonic() {
+                Mnemonic::Pxor | Mnemonic::Xorps | Mnemonic::Xorpd => left[index] ^ right[index],
+                Mnemonic::Pand | Mnemonic::Andps | Mnemonic::Andpd => left[index] & right[index],
+                _ => left[index] | right[index],
+            };
+        }
+        self.cpu
+            .write_vector_operand(&mut self.memory, instruction, 0, &result)
+    }
+
+    fn scalar_float(
+        &mut self,
+        instruction: &Instruction,
+        double: bool,
+    ) -> Result<(), DynamicError> {
+        let width = if double { 8 } else { 4 };
+        let mut destination = self
+            .cpu
+            .read_vector_operand(&self.memory, instruction, 0, 16)?;
+        let source = self
+            .cpu
+            .read_vector_operand(&self.memory, instruction, 1, width)?;
+        if double {
+            let left = f64::from_le_bytes(destination[..8].try_into().unwrap());
+            let right = f64::from_le_bytes(source[..8].try_into().unwrap());
+            let value = match instruction.mnemonic() {
+                Mnemonic::Addsd => left + right,
+                Mnemonic::Subsd => left - right,
+                Mnemonic::Mulsd => left * right,
+                Mnemonic::Divsd => left / right,
+                Mnemonic::Sqrtsd => right.sqrt(),
+                _ => unreachable!(),
+            };
+            destination[..8].copy_from_slice(&value.to_le_bytes());
+        } else {
+            let left = f32::from_le_bytes(destination[..4].try_into().unwrap());
+            let right = f32::from_le_bytes(source[..4].try_into().unwrap());
+            let value = match instruction.mnemonic() {
+                Mnemonic::Addss => left + right,
+                Mnemonic::Subss => left - right,
+                Mnemonic::Mulss => left * right,
+                Mnemonic::Divss => left / right,
+                Mnemonic::Sqrtss => right.sqrt(),
+                _ => unreachable!(),
+            };
+            destination[..4].copy_from_slice(&value.to_le_bytes());
+        }
+        self.cpu
+            .write_vector_operand(&mut self.memory, instruction, 0, &destination)
+    }
+
+    fn x87_load(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        let address = self.cpu.effective_address(instruction)?;
+        let size = instruction.memory_size().size();
+        let value = if instruction.mnemonic() == Mnemonic::Fild {
+            match size {
+                2 => self.memory.read_u16(address)? as i16 as f64,
+                4 => self.memory.read_u32(address)? as i32 as f64,
+                _ => {
+                    return Err(DynamicError::UnsupportedOperand(format!(
+                        "FILD {size} bytes"
+                    )));
+                }
+            }
+        } else {
+            match size {
+                4 => f32::from_le_bytes(self.memory.read(address, 4)?.try_into().unwrap()) as f64,
+                8 => f64::from_le_bytes(self.memory.read(address, 8)?.try_into().unwrap()),
+                _ => {
+                    return Err(DynamicError::UnsupportedOperand(format!(
+                        "FLD {size} bytes"
+                    )));
+                }
+            }
+        };
+        self.cpu.x87_push(value)
+    }
+
+    fn x87_store(&mut self, instruction: &Instruction, pop: bool) -> Result<(), DynamicError> {
+        if self.cpu.x87_depth == 0 {
+            return Err(DynamicError::UnsupportedOperand(
+                "x87 stack underflow".into(),
+            ));
+        }
+        let value = self.cpu.x87[0];
+        let address = self.cpu.effective_address(instruction)?;
+        match instruction.memory_size().size() {
+            4 => self.memory.write(address, &(value as f32).to_le_bytes())?,
+            8 => self.memory.write(address, &value.to_le_bytes())?,
+            size => {
+                return Err(DynamicError::UnsupportedOperand(format!(
+                    "FST {size} bytes"
+                )));
+            }
+        }
+        if pop {
+            let _ = self.cpu.x87_pop()?;
+        }
+        Ok(())
+    }
+
+    fn x87_arithmetic(&mut self, instruction: &Instruction) -> Result<(), DynamicError> {
+        if self.cpu.x87_depth < 2 {
+            return Err(DynamicError::UnsupportedOperand(
+                "x87 arithmetic requires two stack values".into(),
+            ));
+        }
+        let left = self.cpu.x87[1];
+        let right = self.cpu.x87[0];
+        let value = match instruction.mnemonic() {
+            Mnemonic::Fadd | Mnemonic::Faddp => left + right,
+            Mnemonic::Fsub | Mnemonic::Fsubp => left - right,
+            Mnemonic::Fmul | Mnemonic::Fmulp => left * right,
+            Mnemonic::Fdiv | Mnemonic::Fdivp => left / right,
+            _ => unreachable!(),
+        };
+        self.cpu.x87[1] = value;
+        if matches!(
+            instruction.mnemonic(),
+            Mnemonic::Faddp | Mnemonic::Fsubp | Mnemonic::Fmulp | Mnemonic::Fdivp
+        ) {
+            let _ = self.cpu.x87_pop()?;
+        }
         Ok(())
     }
 
@@ -3841,6 +4188,8 @@ mod tests {
             current_thread: 0,
             thread_exit_requested: None,
             next_thread_switch: THREAD_QUANTUM,
+            first_unsupported: None,
+            invalid_instruction_count: 0,
         }
     }
 
@@ -4128,5 +4477,82 @@ mod tests {
         assert_eq!(machine.exceptions.len(), 1);
         assert_eq!(machine.exceptions[0].establisher_frame, None);
         assert_eq!(machine.exceptions[0].outcome, "continued_execution");
+    }
+
+    #[test]
+    fn executes_bit_scan_atomic_and_double_shift_families() {
+        let code = [
+            0xb8, 0x10, 0x00, 0x00, 0x00, // mov eax, 0x10
+            0x0f, 0xba, 0xe8, 0x01, // bts eax, 1
+            0x0f, 0xbc, 0xd8, // bsf ebx, eax
+            0xb9, 0x03, 0x00, 0x00, 0x00, // mov ecx, 3
+            0x0f, 0xc1, 0xc8, // xadd eax, ecx
+            0xba, 0x00, 0x00, 0x00, 0x80, // mov edx, 0x80000000
+            0x0f, 0xa4, 0xd0, 0x01, // shld eax, edx, 1
+            0xf4,
+        ];
+        let mut machine = machine_with_code(&code);
+        machine.execute();
+        assert_eq!(machine.cpu.ebx, 1);
+        assert_eq!(machine.cpu.ecx, 0x12);
+        assert_eq!(machine.cpu.eax, 0x2b);
+    }
+
+    #[test]
+    fn executes_sse2_scalar_arithmetic_and_moves() {
+        let code = [
+            0xb8, 0x00, 0x00, 0xc0, 0x3f, // mov eax, 1.5f
+            0x66, 0x0f, 0x6e, 0xc0, // movd xmm0, eax
+            0xbb, 0x00, 0x00, 0x00, 0x40, // mov ebx, 2.0f
+            0x66, 0x0f, 0x6e, 0xcb, // movd xmm1, ebx
+            0xf3, 0x0f, 0x58, 0xc1, // addss xmm0, xmm1
+            0x66, 0x0f, 0x7e, 0xc1, // movd ecx, xmm0
+            0xf4,
+        ];
+        let mut machine = machine_with_code(&code);
+        machine.execute();
+        assert_eq!(f32::from_bits(machine.cpu.ecx), 3.5);
+    }
+
+    #[test]
+    fn executes_bounded_x87_stack_arithmetic() {
+        let code = [
+            0xd9, 0xe8, // fld1
+            0xd9, 0xe8, // fld1
+            0xde, 0xc1, // faddp st(1), st(0)
+            0xd9, 0x1d, 0x00, 0x30, 0x00, 0x00, // fstp dword ptr [0x3000]
+            0xf4,
+        ];
+        let mut machine = machine_with_code(&code);
+        machine.execute();
+        let value = f32::from_le_bytes(machine.memory.read(0x3000, 4).unwrap().try_into().unwrap());
+        assert_eq!(value, 2.0);
+        assert_eq!(machine.cpu.x87_depth, 0);
+    }
+
+    #[test]
+    fn records_nearby_context_for_unsupported_and_malformed_instructions() {
+        let mut unsupported = machine_with_code(&[0x90, 0x0f, 0x0b]); // nop; ud2
+        unsupported.execute();
+        let diagnostic = unsupported.first_unsupported.unwrap();
+        assert_eq!(diagnostic.address, 0x1001);
+        assert!(diagnostic.instruction.contains("ud2"));
+        assert!(
+            diagnostic
+                .nearby_trace
+                .iter()
+                .any(|event| event.text == "nop")
+        );
+
+        let mut malformed = machine_with_code(&[0x66; 16]);
+        malformed.execute();
+        assert_eq!(malformed.invalid_instruction_count, 1);
+        assert!(
+            malformed
+                .first_unsupported
+                .unwrap()
+                .bytes
+                .starts_with("6666")
+        );
     }
 }

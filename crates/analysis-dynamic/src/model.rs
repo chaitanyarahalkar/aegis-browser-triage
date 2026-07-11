@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 7;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 8;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -217,6 +217,7 @@ pub struct DynamicReport {
     pub generation_stats: GenerationStats,
     pub timeline: Vec<TimelineEvent>,
     pub coverage: ExecutionCoverage,
+    pub diagnostics: ExecutionDiagnostics,
     pub findings: Vec<DynamicFinding>,
     pub warnings: Vec<String>,
     pub truncated: bool,
@@ -376,6 +377,20 @@ pub struct ExecutionCoverage {
     pub modeled_api_calls: usize,
     pub unmodeled_api_calls: usize,
     pub dynamic_api_resolutions: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionDiagnostics {
+    pub first_unsupported: Option<InstructionDiagnostic>,
+    pub invalid_instruction_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstructionDiagnostic {
+    pub address: u32,
+    pub instruction: String,
+    pub bytes: String,
+    pub nearby_trace: Vec<InstructionEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

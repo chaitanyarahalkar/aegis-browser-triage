@@ -20,9 +20,94 @@ pub struct Cpu {
     pub pf: bool,
     pub af: bool,
     pub direction: bool,
+    pub xmm: [[u8; 16]; 8],
+    pub x87: [f64; 8],
+    pub x87_depth: usize,
 }
 
 impl Cpu {
+    pub fn read_vector_operand(
+        &self,
+        memory: &Memory,
+        instruction: &Instruction,
+        operand: u32,
+        width: usize,
+    ) -> Result<[u8; 16], DynamicError> {
+        let mut value = [0u8; 16];
+        match instruction.op_kind(operand) {
+            OpKind::Register => {
+                let index = xmm_index(instruction.op_register(operand)).ok_or_else(|| {
+                    DynamicError::UnsupportedRegister(format!(
+                        "{:?}",
+                        instruction.op_register(operand)
+                    ))
+                })?;
+                value[..width].copy_from_slice(&self.xmm[index][..width]);
+            }
+            OpKind::Memory => {
+                let address = self.effective_address(instruction)?;
+                value[..width].copy_from_slice(memory.read(address, width)?);
+            }
+            kind => return Err(DynamicError::UnsupportedOperand(format!("vector {kind:?}"))),
+        }
+        Ok(value)
+    }
+
+    pub fn write_vector_operand(
+        &mut self,
+        memory: &mut Memory,
+        instruction: &Instruction,
+        operand: u32,
+        value: &[u8],
+    ) -> Result<(), DynamicError> {
+        match instruction.op_kind(operand) {
+            OpKind::Register => {
+                let register = instruction.op_register(operand);
+                let index = xmm_index(register)
+                    .ok_or_else(|| DynamicError::UnsupportedRegister(format!("{register:?}")))?;
+                self.xmm[index][..value.len()].copy_from_slice(value);
+            }
+            OpKind::Memory => {
+                let address = self.effective_address(instruction)?;
+                memory.write(address, value)?;
+            }
+            kind => {
+                return Err(DynamicError::UnsupportedOperand(format!(
+                    "vector write {kind:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn x87_push(&mut self, value: f64) -> Result<(), DynamicError> {
+        if self.x87_depth >= self.x87.len() {
+            return Err(DynamicError::UnsupportedOperand(
+                "x87 stack overflow".into(),
+            ));
+        }
+        for index in (1..=self.x87_depth).rev() {
+            self.x87[index] = self.x87[index - 1];
+        }
+        self.x87[0] = value;
+        self.x87_depth += 1;
+        Ok(())
+    }
+
+    pub fn x87_pop(&mut self) -> Result<f64, DynamicError> {
+        if self.x87_depth == 0 {
+            return Err(DynamicError::UnsupportedOperand(
+                "x87 stack underflow".into(),
+            ));
+        }
+        let value = self.x87[0];
+        for index in 1..self.x87_depth {
+            self.x87[index - 1] = self.x87[index];
+        }
+        self.x87_depth -= 1;
+        Ok(value)
+    }
+
     pub fn read_register(&self, register: Register) -> Result<u32, DynamicError> {
         let value = match register {
             Register::EAX => self.eax,
@@ -270,6 +355,20 @@ impl Cpu {
         self.sf = value & (1 << 7) != 0;
         self.direction = value & (1 << 10) != 0;
         self.of = value & (1 << 11) != 0;
+    }
+}
+
+fn xmm_index(register: Register) -> Option<usize> {
+    match register {
+        Register::XMM0 => Some(0),
+        Register::XMM1 => Some(1),
+        Register::XMM2 => Some(2),
+        Register::XMM3 => Some(3),
+        Register::XMM4 => Some(4),
+        Register::XMM5 => Some(5),
+        Register::XMM6 => Some(6),
+        Register::XMM7 => Some(7),
+        _ => None,
     }
 }
 

@@ -121,7 +121,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 7);
+        assert_eq!(report.schema_version, 8);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -299,6 +299,30 @@ mod tests {
                 .iter()
                 .any(|event| event.tid == 2 && event.operation == "exited")
         );
+    }
+
+    #[test]
+    fn runs_extended_integer_sse2_and_x87_fixture() {
+        let report = analyze_dynamic(
+            "instructions.exe",
+            &fixture::instruction_coverage_pe32(),
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert!(report.diagnostics.first_unsupported.is_none());
+        for mnemonic in ["addss", "bts", "bsf", "faddp", "fstp"] {
+            assert!(
+                report
+                    .instructions
+                    .iter()
+                    .any(|event| event.text.starts_with(mnemonic)),
+                "missing {mnemonic}"
+            );
+        }
     }
 
     #[test]

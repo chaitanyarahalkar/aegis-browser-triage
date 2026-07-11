@@ -189,6 +189,8 @@ export interface DynamicCoverage {
   unmodeled_api_calls: number
   dynamic_api_resolutions: number
 }
+export interface DynamicInstructionDiagnostic { address: number; instruction: string; bytes: string; nearby_trace: DynamicInstructionEvent[] }
+export interface DynamicExecutionDiagnostics { first_unsupported: DynamicInstructionDiagnostic | null; invalid_instruction_count: number }
 
 export interface DynamicFinding {
   id: string
@@ -259,6 +261,7 @@ export interface DynamicReport {
   generation_stats: { count: number; chains: number; executed_generations: number; truncated: boolean }
   timeline: DynamicTimelineEvent[]
   coverage: DynamicCoverage
+  diagnostics: DynamicExecutionDiagnostics
   findings: DynamicFinding[]
   warnings: string[]
   truncated: boolean
