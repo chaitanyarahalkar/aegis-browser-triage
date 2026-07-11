@@ -10,3 +10,8 @@ that exercises only emulator-owned memory artifacts, a virtual file and registry
 value, a scripted WinINet download, provenance flows, a guest thread, and a
 vectored exception handler. Neither fixture is executed natively or given access
 to browser or host resources.
+
+`aegis-safe-unpacking-pe64.exe` copies an inert MZ-marked byte block into synthetic
+heap memory, changes only guest permissions, resolves emulator-owned exports through
+both Win32 and `Ldr*` paths, executes a tiny safe stage, and exits. It exists to test
+generated entry-point candidates and observed runtime-import reconstruction.
