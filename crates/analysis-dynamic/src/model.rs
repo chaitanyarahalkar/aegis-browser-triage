@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 11;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 12;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -321,6 +321,8 @@ pub struct DynamicReport {
     pub provenance_sources: Vec<ProvenanceSource>,
     pub provenance_flows: Vec<ProvenanceFlow>,
     pub provenance_stats: ProvenanceStats,
+    pub snapshots: Vec<ExecutionSnapshot>,
+    pub snapshot_stats: SnapshotStats,
     pub memory: Vec<MemoryEvent>,
     pub injection: Vec<InjectionEvent>,
     pub persistence: Vec<PersistenceEvent>,
@@ -419,6 +421,54 @@ pub struct ProvenanceStats {
     pub flow_count: usize,
     pub tracked_ranges: usize,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionSnapshot {
+    pub sequence: u64,
+    pub trigger: String,
+    pub instruction: u64,
+    pub virtual_time_ms: u64,
+    pub registers: SnapshotRegisters,
+    pub events: SnapshotEventCounts,
+    pub dirty_memory_regions: usize,
+    pub state_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotRegisters {
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
+    pub esi: u32,
+    pub edi: u32,
+    pub ebp: u32,
+    pub esp: u32,
+    pub eip: u32,
+    pub eflags: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotEventCounts {
+    pub api_calls: usize,
+    pub processes: usize,
+    pub filesystem: usize,
+    pub registry: usize,
+    pub network: usize,
+    pub memory: usize,
+    pub injection: usize,
+    pub persistence: usize,
+    pub provenance_flows: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotStats {
+    pub count: usize,
+    pub truncated: bool,
+    pub max_snapshots: usize,
+    pub max_dirty_regions: usize,
+    pub sampled_bytes_per_region: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

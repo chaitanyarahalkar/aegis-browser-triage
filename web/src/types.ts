@@ -136,6 +136,11 @@ export type DynamicProvenanceSourceKind = 'sample' | 'network' | 'registry' | 'v
 export type DynamicProvenanceSinkKind = 'executable_memory' | 'process_command' | 'persistence' | 'network_request' | 'remote_process' | 'virtual_file'
 export interface DynamicProvenanceSource { id: string; kind: DynamicProvenanceSourceKind; label: string; address: number; size: number; api: string; instruction: number; parent_ids: string[] }
 export interface DynamicProvenanceFlow { sequence: number; source_ids: string[]; sink: DynamicProvenanceSinkKind; destination: string; address: number; size: number; api: string; instruction: number }
+export interface DynamicExecutionSnapshot {
+  sequence: number; trigger: string; instruction: number; virtual_time_ms: number; dirty_memory_regions: number; state_sha256: string
+  registers: { eax: number; ebx: number; ecx: number; edx: number; esi: number; edi: number; ebp: number; esp: number; eip: number; eflags: number }
+  events: { api_calls: number; processes: number; filesystem: number; registry: number; network: number; memory: number; injection: number; persistence: number; provenance_flows: number }
+}
 
 export interface DynamicMemoryEvent {
   operation: string
@@ -261,6 +266,8 @@ export interface DynamicReport {
   provenance_sources: DynamicProvenanceSource[]
   provenance_flows: DynamicProvenanceFlow[]
   provenance_stats: { source_count: number; flow_count: number; tracked_ranges: number; truncated: boolean }
+  snapshots: DynamicExecutionSnapshot[]
+  snapshot_stats: { count: number; truncated: boolean; max_snapshots: number; max_dirty_regions: number; sampled_bytes_per_region: number }
   memory: DynamicMemoryEvent[]
   injection: DynamicInjectionEvent[]
   persistence: DynamicPersistenceEvent[]

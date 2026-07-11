@@ -1,10 +1,11 @@
 use crate::{
     ApiEvent, ArtifactKind, ArtifactOrigin, DynamicAnalysis, DynamicError, DynamicFinding,
     DynamicOptions, DynamicReport, DynamicSeverity, ExceptionEvent, ExecutionCoverage,
-    ExecutionDiagnostics, ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent,
-    InstructionDiagnostic, InstructionEvent, MemoryEvent, NetworkEvent, NetworkExchange,
-    NetworkHeader, NetworkMode, PersistenceEvent, ProcessEvent, ProvenanceSinkKind,
-    ProvenanceSourceKind, RegistryEvent, SystemEvent, Termination, ThreadEvent, ThreadSummary,
+    ExecutionDiagnostics, ExecutionProfile, ExecutionSnapshot, FileEvent, HARD_MAX_API_EVENTS,
+    InjectionEvent, InstructionDiagnostic, InstructionEvent, MemoryEvent, NetworkEvent,
+    NetworkExchange, NetworkHeader, NetworkMode, PersistenceEvent, ProcessEvent,
+    ProvenanceSinkKind, ProvenanceSourceKind, RegistryEvent, SnapshotEventCounts,
+    SnapshotRegisters, SnapshotStats, SystemEvent, Termination, ThreadEvent, ThreadSummary,
     TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
@@ -42,6 +43,9 @@ const MAX_THREAD_EVENTS: usize = 4_096;
 const MAX_SYSTEM_EVENTS: usize = 4_096;
 const THREAD_QUANTUM: u64 = 100;
 const THREAD_STACK_SIZE: usize = 64 * 1024;
+const MAX_EXECUTION_SNAPSHOTS: usize = 256;
+const MAX_SNAPSHOT_DIRTY_REGIONS: usize = 64;
+const SNAPSHOT_REGION_SAMPLE_BYTES: usize = 512;
 
 pub(crate) fn run(
     _name: String,
@@ -174,9 +178,13 @@ pub(crate) fn run(
         network_runtime: NetworkRuntime::new(network_scenario),
         provenance,
         crypto_inputs: BTreeMap::new(),
+        snapshots: Vec::new(),
+        snapshots_truncated: false,
     };
     machine.start_execution()?;
+    machine.record_snapshot("entry", false);
     machine.execute();
+    machine.record_snapshot("final", true);
     machine.capture_final_artifacts();
     machine.save_current_thread();
 
@@ -188,6 +196,13 @@ pub(crate) fn run(
     let (artifact_summaries, artifact_stats, artifact_blobs) = machine.artifacts.finish();
     let (payload_generations, generation_stats) = machine.generations.finish();
     let (provenance_sources, provenance_flows, provenance_stats) = machine.provenance.finish();
+    let snapshot_stats = SnapshotStats {
+        count: machine.snapshots.len(),
+        truncated: machine.snapshots_truncated,
+        max_snapshots: MAX_EXECUTION_SNAPSHOTS,
+        max_dirty_regions: MAX_SNAPSHOT_DIRTY_REGIONS,
+        sampled_bytes_per_region: SNAPSHOT_REGION_SAMPLE_BYTES * 2,
+    };
     for artifact in &artifact_summaries {
         if artifact.detected_format != "unknown"
             || artifact
@@ -247,6 +262,8 @@ pub(crate) fn run(
         provenance_sources,
         provenance_flows,
         provenance_stats,
+        snapshots: machine.snapshots,
+        snapshot_stats,
         memory: machine.memory_events,
         injection: machine.injection,
         persistence: machine.persistence,
@@ -333,6 +350,8 @@ struct Machine {
     network_runtime: NetworkRuntime,
     provenance: ProvenanceTracker,
     crypto_inputs: BTreeMap<u32, (u32, usize)>,
+    snapshots: Vec<ExecutionSnapshot>,
+    snapshots_truncated: bool,
 }
 
 #[derive(Clone)]
@@ -1005,6 +1024,95 @@ impl Machine {
 
     fn start_execution(&mut self) -> Result<(), DynamicError> {
         self.start_next_target()
+    }
+
+    fn record_snapshot(&mut self, trigger: impl Into<String>, final_snapshot: bool) {
+        if !final_snapshot && self.snapshots.len() >= MAX_EXECUTION_SNAPSHOTS - 1 {
+            self.snapshots_truncated = true;
+            return;
+        }
+        if final_snapshot && self.snapshots.len() >= MAX_EXECUTION_SNAPSHOTS {
+            self.snapshots.pop();
+            self.snapshots_truncated = true;
+        }
+        let events = SnapshotEventCounts {
+            api_calls: self.api_calls.len(),
+            processes: self.processes.len(),
+            filesystem: self.filesystem.len(),
+            registry: self.registry.len(),
+            network: self.network.len(),
+            memory: self.memory_events.len(),
+            injection: self.injection.len(),
+            persistence: self.persistence.len(),
+            provenance_flows: self.provenance.flow_count(),
+        };
+        let dirty_memory_regions = self.memory.dirty_regions().count();
+        let registers = SnapshotRegisters {
+            eax: self.cpu.eax,
+            ebx: self.cpu.ebx,
+            ecx: self.cpu.ecx,
+            edx: self.cpu.edx,
+            esi: self.cpu.esi,
+            edi: self.cpu.edi,
+            ebp: self.cpu.ebp,
+            esp: self.cpu.esp,
+            eip: self.cpu.eip,
+            eflags: self.cpu.flags_value(),
+        };
+        let mut hasher = Sha256::new();
+        for value in [
+            registers.eax,
+            registers.ebx,
+            registers.ecx,
+            registers.edx,
+            registers.esi,
+            registers.edi,
+            registers.ebp,
+            registers.esp,
+            registers.eip,
+            registers.eflags,
+        ] {
+            hasher.update(value.to_le_bytes());
+        }
+        for value in [
+            events.api_calls,
+            events.processes,
+            events.filesystem,
+            events.registry,
+            events.network,
+            events.memory,
+            events.injection,
+            events.persistence,
+            events.provenance_flows,
+            dirty_memory_regions,
+        ] {
+            hasher.update((value as u64).to_le_bytes());
+        }
+        for region in self.memory.dirty_regions().take(MAX_SNAPSHOT_DIRTY_REGIONS) {
+            hasher.update(region.start.to_le_bytes());
+            hasher.update((region.data.len() as u64).to_le_bytes());
+            hasher.update(region.name.as_bytes());
+            hasher.update(region.permissions.display().as_bytes());
+            let head = region.data.len().min(SNAPSHOT_REGION_SAMPLE_BYTES);
+            hasher.update(&region.data[..head]);
+            if region.data.len() > head {
+                let tail = region
+                    .data
+                    .len()
+                    .saturating_sub(SNAPSHOT_REGION_SAMPLE_BYTES);
+                hasher.update(&region.data[tail..]);
+            }
+        }
+        self.snapshots.push(ExecutionSnapshot {
+            sequence: self.snapshots.len() as u64,
+            trigger: trigger.into(),
+            instruction: self.instruction_count,
+            virtual_time_ms: self.virtual_time_ms,
+            registers,
+            events,
+            dirty_memory_regions,
+            state_sha256: hex::encode(hasher.finalize()),
+        });
     }
 
     fn start_next_target(&mut self) -> Result<(), DynamicError> {
@@ -2024,6 +2132,7 @@ impl Machine {
         });
         let (category, operation, subject) =
             self.timeline_details(&import.name, &summary, event_counts);
+        let snapshot_trigger = format!("api:{}", import.name);
         self.timeline.push(TimelineEvent {
             sequence: self.timeline.len() as u64,
             instruction: self.instruction_count,
@@ -2033,6 +2142,7 @@ impl Machine {
             subject,
             source_api: import.name,
         });
+        self.record_snapshot(snapshot_trigger, false);
         if let Some((code, name)) = self.queued_exception.take()
             && !self.dispatch_exception(
                 code,
@@ -5342,7 +5452,27 @@ mod tests {
             network_runtime: NetworkRuntime::new(crate::NetworkScenario::default()),
             provenance: ProvenanceTracker::default(),
             crypto_inputs: BTreeMap::new(),
+            snapshots: Vec::new(),
+            snapshots_truncated: false,
         }
+    }
+
+    #[test]
+    fn bounds_snapshots_and_preserves_final_state() {
+        let mut machine = machine_with_code(&[0xf4]);
+        machine.record_snapshot("same-a", false);
+        machine.record_snapshot("same-b", false);
+        assert_eq!(
+            machine.snapshots[0].state_sha256,
+            machine.snapshots[1].state_sha256
+        );
+        for index in 0..300 {
+            machine.record_snapshot(format!("api:{index}"), false);
+        }
+        machine.record_snapshot("final", true);
+        assert_eq!(machine.snapshots.len(), MAX_EXECUTION_SNAPSHOTS);
+        assert_eq!(machine.snapshots.last().unwrap().trigger, "final");
+        assert!(machine.snapshots_truncated);
     }
 
     #[test]

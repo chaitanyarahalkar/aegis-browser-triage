@@ -74,6 +74,9 @@ Dynamic analysis:
 - Provenance tracking retains at most 256 sources, 4,096 labeled ranges, 4,096
   security-relevant flows, and eight source labels per range; it stores labels
   and metadata rather than another copy of guest bytes
+- Execution snapshots are capped at 256 per run. Each state hash samples at most
+  the first and last 512 bytes of 64 dirty regions; reports contain registers,
+  counters, and hashes but no raw guest-memory snapshot bytes
 - 4 MiB per synthetic remote-memory region and 16 MiB total remote-process memory
 - A bounded synthetic PEB/TEB and process environment that reveal no host values
 - Guest SEH chains dispatch at most 16 handlers per exception and retain at most 128
@@ -141,6 +144,10 @@ its supported surface.
 Provenance is intentionally API-level and follows modeled range writes, copies,
 conversions, and crypto outputs. It is not whole-CPU taint propagation or symbolic
 execution, so unmodeled instruction-only transformations can break a data-flow chain.
+
+Snapshot state hashes are deterministic bounded fingerprints, not complete memory
+images. Matching hashes increase confidence that modeled states align; they do not
+prove that every unsampled byte or unmodeled guest state is identical.
 
 Full guest-OS virtualization is outside this product boundary. Adding an API is
 acceptable only when its implementation remains deterministic and cannot reach

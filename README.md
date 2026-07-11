@@ -40,6 +40,8 @@ Dynamic reports currently include:
 - Bounded API-level byte provenance from sample, network, registry, virtual-file,
   and transformed data into process, executable-memory, persistence, network,
   file, and remote-process sinks
+- Entry, API-boundary, and final execution snapshots with register/event metadata,
+  bounded memory fingerprints, first-divergence detection, and exportable run diffs
 - Ordered behavior timeline and execution/API coverage metrics
 - Four deterministic Windows environment profiles with selectable single runs and
   a bounded profile-matrix comparison for environment-sensitive behavior

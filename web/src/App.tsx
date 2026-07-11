@@ -661,7 +661,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'network' | 'provenance' | 'profiles'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'network' | 'provenance' | 'snapshots' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
@@ -724,6 +724,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
         <button className={view === 'system' ? 'active' : ''} type="button" onClick={() => setView('system')}>System objects ({report.system.length})</button>
         <button className={view === 'network' ? 'active' : ''} type="button" onClick={() => setView('network')}>Network ({report.network_exchanges.length})</button>
         <button className={view === 'provenance' ? 'active' : ''} type="button" onClick={() => setView('provenance')}>Provenance ({report.provenance_flows.length})</button>
+        <button className={view === 'snapshots' ? 'active' : ''} type="button" onClick={() => setView('snapshots')}>Snapshots ({report.snapshots.length})</button>
         {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
@@ -738,9 +739,14 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
       {view === 'system' && <SystemView report={report} />}
       {view === 'network' && <NetworkView report={report} />}
       {view === 'provenance' && <ProvenanceView report={report} />}
+      {view === 'snapshots' && <SnapshotView report={report} />}
       {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
+}
+
+function SnapshotView({ report }: { report: DynamicReport }) {
+  return <div className="generation-layout"><div className="stats-grid"><Stat label="Snapshots" value={report.snapshot_stats.count.toLocaleString()} detail={`${report.snapshot_stats.max_snapshots} maximum`} /><Stat label="Dirty-region cap" value={report.snapshot_stats.max_dirty_regions.toLocaleString()} detail={`${formatBytes(report.snapshot_stats.sampled_bytes_per_region)} sampled per region`} /><Stat label="Capture status" value={report.snapshot_stats.truncated ? 'Truncated' : 'Complete'} detail="Metadata and hashes only" /></div><Section title="Execution state snapshots" description="Entry, API-boundary, and final states contain registers, event counters, and a deterministic bounded memory fingerprint—never raw guest-memory dumps."><Table><thead><tr><th>#</th><th>Trigger</th><th>Instruction</th><th>Virtual time</th><th>EIP / EAX</th><th>Events</th><th>Dirty regions</th><th>State SHA-256</th></tr></thead><tbody>{report.snapshots.map((snapshot) => { const behavior = snapshot.events.processes + snapshot.events.filesystem + snapshot.events.registry + snapshot.events.network + snapshot.events.memory + snapshot.events.injection + snapshot.events.persistence; return <tr key={snapshot.sequence}><td>{snapshot.sequence + 1}</td><td><code className="strong-code">{snapshot.trigger}</code></td><td>{snapshot.instruction.toLocaleString()}</td><td>{snapshot.virtual_time_ms.toLocaleString()} ms</td><td><code>{formatOffset(snapshot.registers.eip)} / {formatOffset(snapshot.registers.eax)}</code></td><td>{snapshot.events.api_calls} API · {behavior} behavior · {snapshot.events.provenance_flows} flows</td><td>{snapshot.dirty_memory_regions}</td><td><code>{snapshot.state_sha256.slice(0, 16)}…</code></td></tr> })}</tbody></Table></Section></div>
 }
 
 function ProvenanceView({ report }: { report: DynamicReport }) {
@@ -784,8 +790,34 @@ function ProfilePicker({ value, onChange }: { value: string; onChange: (value: s
 }
 
 function ProfileComparison({ reports, onSelect }: { reports: DynamicReport[]; onSelect: (profileId: string) => void }) {
-  const baseline = reports[0]
-  return <Section title="Environment profile comparison" description="The same sample was executed independently under deterministic synthetic environments."><Table><thead><tr><th>Profile</th><th>Environment</th><th>Termination</th><th>Instructions</th><th>Behavior</th><th>Artifacts</th><th>Delta from baseline</th></tr></thead><tbody>{reports.map((report) => { const behavior = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.persistence.length + report.injection.length; const baselineBehavior = baseline.processes.length + baseline.filesystem.length + baseline.registry.length + baseline.network.length + baseline.persistence.length + baseline.injection.length; const apiResultChanged = report.api_calls.some((event, index) => event.result !== baseline.api_calls[index]?.result); const delta = report.api_calls.length !== baseline.api_calls.length || apiResultChanged || behavior !== baselineBehavior || report.artifacts.length !== baseline.artifacts.length || JSON.stringify(report.termination) !== JSON.stringify(baseline.termination); return <tr key={report.profile.environment.id}><td><button className="offset-link" type="button" onClick={() => onSelect(report.profile.environment.id)}>{report.profile.environment.label}</button></td><td><small>{report.profile.environment.windows_version}<br />{report.profile.environment.cpu_count} CPU · {formatBytes(report.profile.environment.memory_mb * 1024 * 1024)} · {report.profile.environment.network_mode}{report.profile.environment.debugger_present ? ' · debugger' : ''}</small></td><td>{terminationLabel(report.termination)}</td><td>{report.instruction_count.toLocaleString()}</td><td>{behavior}</td><td>{report.artifacts.length}</td><td><span className={`tag ${delta ? 'danger' : ''}`}>{report === baseline ? 'Baseline' : delta ? 'Behavior changed' : 'Same path'}</span></td></tr> })}</tbody></Table></Section>
+  const [baselineId, setBaselineId] = useState(reports[0].profile.environment.id)
+  const [candidateId, setCandidateId] = useState(reports[1]?.profile.environment.id ?? baselineId)
+  const baseline = reports.find((report) => report.profile.environment.id === baselineId) ?? reports[0]
+  const candidate = reports.find((report) => report.profile.environment.id === candidateId) ?? reports[1] ?? baseline
+  const comparison = compareDynamicRuns(baseline, candidate)
+  const exportComparison = () => { const url = URL.createObjectURL(new Blob([JSON.stringify(comparison, null, 2)], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${baseline.profile.environment.id}-vs-${candidate.profile.environment.id}.aegis-run-diff.json`; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 0) }
+  return <div className="generation-layout"><Section title="Environment profile comparison" description="The same sample was executed independently under deterministic synthetic environments."><Table><thead><tr><th>Profile</th><th>Environment</th><th>Termination</th><th>Instructions</th><th>Behavior</th><th>Artifacts</th><th>First snapshot delta</th></tr></thead><tbody>{reports.map((report) => { const delta = compareDynamicRuns(reports[0], report); return <tr key={report.profile.environment.id}><td><button className="offset-link" type="button" onClick={() => onSelect(report.profile.environment.id)}>{report.profile.environment.label}</button></td><td><small>{report.profile.environment.windows_version}<br />{report.profile.environment.cpu_count} CPU · {formatBytes(report.profile.environment.memory_mb * 1024 * 1024)} · {report.profile.environment.network_mode}{report.profile.environment.debugger_present ? ' · debugger' : ''}</small></td><td>{terminationLabel(report.termination)}</td><td>{report.instruction_count.toLocaleString()}</td><td>{dynamicBehaviorCount(report)}</td><td>{report.artifacts.length}</td><td><span className={`tag ${delta.different ? 'danger' : ''}`}>{report === reports[0] ? 'Baseline' : delta.first_divergence?.trigger ?? (delta.different ? 'Report delta' : 'Same path')}</span></td></tr> })}</tbody></Table></Section><Section title="Detailed run diff" description="Compare any two deterministic runs and export a metadata-only diff."><div className="artifact-actions"><div className="button-row"><label className="profile-picker"><span>Baseline</span><select aria-label="Comparison baseline" value={baselineId} onChange={(event) => setBaselineId(event.target.value)}>{reports.map((report) => <option key={report.profile.environment.id} value={report.profile.environment.id}>{report.profile.environment.label}</option>)}</select></label><label className="profile-picker"><span>Candidate</span><select aria-label="Comparison candidate" value={candidateId} onChange={(event) => setCandidateId(event.target.value)}>{reports.map((report) => <option key={report.profile.environment.id} value={report.profile.environment.id}>{report.profile.environment.label}</option>)}</select></label></div><button className="button secondary compact" type="button" onClick={exportComparison}>Export run diff JSON</button></div><div className="stats-grid"><Stat label="First divergence" value={comparison.first_divergence?.trigger ?? 'None'} detail={comparison.first_divergence ? `snapshot ${comparison.first_divergence.sequence + 1}` : 'State hashes match'} /><Stat label="Instruction delta" value={comparison.deltas.instructions.toLocaleString()} detail={`${candidate.instruction_count.toLocaleString()} candidate`} /><Stat label="Behavior delta" value={comparison.deltas.behavior.toLocaleString()} detail={`${comparison.deltas.provenance_flows} provenance flows`} /></div><Table><thead><tr><th>Set</th><th>Added</th><th>Removed</th></tr></thead><tbody><tr><td>APIs</td><td><code>{comparison.api_changes.added.join(', ') || 'None'}</code></td><td><code>{comparison.api_changes.removed.join(', ') || 'None'}</code></td></tr><tr><td>Findings</td><td><code>{comparison.finding_changes.added.join(', ') || 'None'}</code></td><td><code>{comparison.finding_changes.removed.join(', ') || 'None'}</code></td></tr></tbody></Table></Section></div>
+}
+
+function dynamicBehaviorCount(report: DynamicReport) {
+  return report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length + report.persistence.length + report.injection.length
+}
+
+function setChanges(baseline: string[], candidate: string[]) {
+  const before = new Set(baseline); const after = new Set(candidate)
+  return { added: [...after].filter((value) => !before.has(value)).sort(), removed: [...before].filter((value) => !after.has(value)).sort() }
+}
+
+function compareDynamicRuns(baseline: DynamicReport, candidate: DynamicReport) {
+  const count = Math.max(baseline.snapshots.length, candidate.snapshots.length)
+  let firstDivergence: { sequence: number; trigger: string; baseline_sha256: string | null; candidate_sha256: string | null } | null = null
+  for (let sequence = 0; sequence < count; sequence += 1) { const before = baseline.snapshots[sequence]; const after = candidate.snapshots[sequence]; if (!before || !after || before.trigger !== after.trigger || before.state_sha256 !== after.state_sha256) { firstDivergence = { sequence, trigger: after?.trigger ?? before?.trigger ?? 'missing snapshot', baseline_sha256: before?.state_sha256 ?? null, candidate_sha256: after?.state_sha256 ?? null }; break } }
+  const apiChanges = setChanges(baseline.api_calls.map((event) => `${event.module}!${event.name}`), candidate.api_calls.map((event) => `${event.module}!${event.name}`))
+  const findingChanges = setChanges(baseline.findings.map((finding) => finding.id), candidate.findings.map((finding) => finding.id))
+  const deltas = { instructions: candidate.instruction_count - baseline.instruction_count, api_calls: candidate.api_calls.length - baseline.api_calls.length, behavior: dynamicBehaviorCount(candidate) - dynamicBehaviorCount(baseline), artifacts: candidate.artifacts.length - baseline.artifacts.length, provenance_flows: candidate.provenance_flows.length - baseline.provenance_flows.length }
+  const terminationChanged = JSON.stringify(baseline.termination) !== JSON.stringify(candidate.termination)
+  const different = firstDivergence !== null || terminationChanged || Object.values(deltas).some((value) => value !== 0) || apiChanges.added.length > 0 || apiChanges.removed.length > 0 || findingChanges.added.length > 0 || findingChanges.removed.length > 0
+  return { schema: 'aegis-run-diff-v1', sample_sha256: baseline.sample_sha256, baseline_profile: baseline.profile.environment.id, candidate_profile: candidate.profile.environment.id, different, first_divergence: firstDivergence, termination_changed: terminationChanged, deltas, api_changes: apiChanges, finding_changes: findingChanges }
 }
 
 function InjectionChain({ events }: { events: DynamicReport['injection'] }) {

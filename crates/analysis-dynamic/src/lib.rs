@@ -123,7 +123,15 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 11);
+        assert_eq!(report.schema_version, 12);
+        assert_eq!(report.snapshots.first().unwrap().trigger, "entry");
+        assert_eq!(report.snapshots.last().unwrap().trigger, "final");
+        assert!(
+            report
+                .snapshots
+                .iter()
+                .all(|snapshot| snapshot.state_sha256.len() == 64)
+        );
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);

@@ -24,6 +24,10 @@ pub(crate) struct ProvenanceTracker {
 }
 
 impl ProvenanceTracker {
+    pub fn flow_count(&self) -> usize {
+        self.flows.len()
+    }
+
     pub fn flow_evidence(&self) -> Vec<String> {
         self.flows
             .iter()

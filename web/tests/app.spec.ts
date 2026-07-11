@@ -51,7 +51,7 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v11', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v12', { exact: true })).toBeVisible()
 })
 
 test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
@@ -65,9 +65,21 @@ test('runs and compares deterministic environment profiles', async ({ page, isMo
   for (const profile of ['Balanced workstation', 'Legacy workstation', 'Hardened offline host', 'Instrumented analysis host']) {
     await expect(page.getByRole('button', { name: profile, exact: true })).toBeVisible()
   }
-  await expect(page.getByText('Behavior changed', { exact: true }).first()).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Detailed run diff' })).toBeVisible()
+  await expect(page.getByText('api:GetTickCount', { exact: true }).first()).toBeVisible()
+  const diffDownloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export run diff JSON' }).click()
+  const diffDownload = await diffDownloadPromise
+  const diff = JSON.parse(readFileSync(await diffDownload.path()!, 'utf8'))
+  expect(diff.schema).toBe('aegis-run-diff-v1')
+  expect(diff.different).toBe(true)
+  expect(diff.first_divergence.trigger).toBe('api:GetTickCount')
   await page.getByRole('button', { name: 'Hardened offline host', exact: true }).click()
   await expect(page.getByText('Windows 11 24H2 · offline', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: /^Snapshots/ }).click()
+  await expect(page.getByRole('heading', { name: 'Execution state snapshots' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'entry', exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'final', exact: true })).toBeVisible()
 
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Export report' }).click()
@@ -149,7 +161,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(11)
+  expect(json.dynamic.schema_version).toBe(12)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
