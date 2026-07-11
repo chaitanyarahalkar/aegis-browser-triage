@@ -40,6 +40,77 @@ export interface Indicator {
   offset: number
 }
 
+export interface StaticInstruction {
+  address: number
+  file_offset: number
+  bytes: string
+  text: string
+  mnemonic: string
+  branch_target: number | null
+}
+
+export interface StaticBasicBlock {
+  start: number
+  end: number
+  file_offset: number | null
+  instructions: StaticInstruction[]
+}
+
+export interface StaticControlFlowEdge {
+  from: number
+  to: number
+  kind: string
+}
+
+export interface StaticCallTarget {
+  instruction_address: number
+  target: number | null
+  kind: string
+}
+
+export interface StaticFunction {
+  address: number
+  file_offset: number | null
+  name: string
+  source: string
+  blocks: StaticBasicBlock[]
+  edges: StaticControlFlowEdge[]
+  calls: StaticCallTarget[]
+}
+
+export interface CapabilityEvidence {
+  kind: string
+  value: string
+  address: number | null
+  file_offset: number | null
+}
+
+export interface CapabilityMatch {
+  id: string
+  name: string
+  namespace: string
+  description: string
+  confidence: Confidence
+  evidence: CapabilityEvidence[]
+}
+
+export interface CodeAnalysisReport {
+  disassembly_supported: boolean
+  architecture: string | null
+  reason: string | null
+  functions: StaticFunction[]
+  capabilities: CapabilityMatch[]
+  stats: {
+    executable_sections: number
+    executable_bytes: number
+    decoded_instructions: number
+    functions: number
+    basic_blocks: number
+    control_flow_edges: number
+    truncated: boolean
+  }
+}
+
 export interface Evidence {
   offset: number | null
   length: number | null
@@ -84,6 +155,7 @@ export interface AnalysisReport {
   exports: SymbolRecord[]
   strings: ExtractedString[]
   indicators: Indicator[]
+  code: CodeAnalysisReport
   findings: Finding[]
   warnings: AnalysisWarning[]
   stats: AnalysisStats

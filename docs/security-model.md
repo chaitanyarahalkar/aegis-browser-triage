@@ -47,6 +47,19 @@ Static analysis:
 - 50,000 strings, 4 KiB per string, and 8 MiB aggregate string data
 - 64 KiB maximum worker hex response; the UI requests 512-byte pages
 - Magic-based detection instead of trusting a filename or MIME type
+- Static disassembly is limited to x86/x64 executable sections, at most 8 MiB of
+  executable bytes, 50,000 decoded instructions, 2,048 functions, 8,192 basic
+  blocks, and 16,384 control-flow edges
+- A function retains at most 4,096 instructions and 256 blocks; a single linear
+  block retains at most 512 instructions before the report is marked truncated
+- Recursive traversal begins only at bounded entry, export, executable-section
+  fallback, and direct-call targets. Addresses above JavaScript's exact-integer
+  ceiling are skipped rather than serialized imprecisely
+- Capability rules are local and first-party. Each match retains at most 16
+  deduplicated import, string, or instruction evidence records
+- Each retained instruction includes at most its 15-byte x86 encoding. This is
+  bounded by the 50,000-instruction ceiling and is included in explicit report
+  exports as code evidence; arbitrary raw sample pages are not exported
 
 Dynamic analysis:
 
@@ -137,7 +150,9 @@ Application controls:
 - No telemetry, analytics, external fonts, remote reputation, or third-party assets
 - CSP limits scripts, workers, and connections to the same origin
 - No automatic localStorage, IndexedDB, OPFS, service-worker, or server persistence
-- No original sample bytes, runtime artifact bytes, or custom YARA source in exported reports
+- No original sample body, arbitrary raw-byte pages, runtime artifact bytes, or
+  custom YARA source in exported reports. Static reports retain only bounded
+  decoded instruction encodings as described above
 
 `connect-src 'self'` permits workers to fetch same-origin analyzer Wasm and the
 bundled safe fixture. No guest network API maps to `fetch`, WebSocket, WebRTC, or
@@ -156,6 +171,12 @@ encrypted, self-modifying, multi-process, kernel-mode, environment-dependent,
 or runtime-downloaded behavior may be missed. The current interpreter is not a
 complete x86 CPU or Windows implementation; a sample can evade or simply exceed
 its supported surface.
+
+Static recursive disassembly is also heuristic. Indirect calls, jump tables,
+overlapping instructions, exception-driven control flow, obfuscation, and code
+generated at runtime can hide functions or produce incomplete graphs. Capability
+matches are explainable signatures, not the upstream CAPA ruleset, a decompiler,
+or proof that referenced behavior executes.
 
 PE64 support covers core integer, memory, control-flow, RIP-relative, and Microsoft
 x64 ABI behavior plus the milestone parity surfaces for runtime artifacts and

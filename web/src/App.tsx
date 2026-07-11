@@ -13,6 +13,8 @@ import type {
   DynamicTermination,
   ExtractedString,
   ProgressStage,
+  StaticBasicBlock,
+  StaticFunction,
   SymbolRecord,
   YaraCompileSummary,
   YaraProgressStage,
@@ -30,11 +32,11 @@ const ENVIRONMENT_PROFILES: DynamicEnvironmentProfile[] = [
 type AppStatus = 'idle' | 'reading' | 'analyzing' | 'done' | 'error'
 type DynamicStatus = 'idle' | 'running' | 'done' | 'error'
 type YaraStatus = 'idle' | 'running' | 'done' | 'error'
-type Tab = 'summary' | 'structure' | 'symbols' | 'strings' | 'hex' | 'dynamic' | 'yara'
+type Tab = 'summary' | 'structure' | 'symbols' | 'code' | 'strings' | 'hex' | 'dynamic' | 'yara'
 
 const progressLabels: Record<ProgressStage, string> = {
   'loading-engine': 'Loading analysis engine',
-  parsing: 'Parsing binary',
+  parsing: 'Parsing and disassembling binary',
   finalizing: 'Preparing report',
 }
 
@@ -172,6 +174,19 @@ export default function App() {
       await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Safe PE64 fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
+  const analyzeCodeDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-code-analysis-pe64.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Safe code-analysis fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Safe code-analysis fixture could not be loaded')
       setStatus('error')
     }
   }, [inspectFile])
@@ -408,6 +423,7 @@ export default function App() {
               inspectFile={inspectFile}
               analyzeDemo={analyzeDemo}
               analyzePe64Demo={analyzePe64Demo}
+              analyzeCodeDemo={analyzeCodeDemo}
               analyzePe64ParityDemo={analyzePe64ParityDemo}
               analyzePe64UnpackingDemo={analyzePe64UnpackingDemo}
               analyzeArtifactDemo={analyzeArtifactDemo}
@@ -470,6 +486,7 @@ export default function App() {
             onYaraSource={(source, name) => { yaraClient.reset(); setYaraSource(source); setYaraSourceName(name); setYaraSummary(null); setYaraReport(null); setYaraStatus('idle'); setYaraError(null) }}
             onRunYara={compileAndScanYara}
             onYaraOffset={(offset) => { setHexTarget(offset); setActiveTab('hex') }}
+            onCodeOffset={(offset) => { setHexTarget(offset); setActiveTab('hex') }}
             hexTarget={hexTarget}
           />
         )}
@@ -483,13 +500,14 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzePe64ParityDemo, analyzePe64UnpackingDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzeCodeDemo, analyzePe64ParityDemo, analyzePe64UnpackingDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
   inspectFile: (file: File) => Promise<void>
   analyzeDemo: () => Promise<void>
   analyzePe64Demo: () => Promise<void>
+  analyzeCodeDemo: () => Promise<void>
   analyzePe64ParityDemo: () => Promise<void>
   analyzePe64UnpackingDemo: () => Promise<void>
   analyzeArtifactDemo: () => Promise<void>
@@ -520,6 +538,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
         <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzePe64Demo()}>Use safe PE64 demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzeCodeDemo()}>Use code analysis demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzePe64ParityDemo()}>Use PE64 parity demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzePe64UnpackingDemo()}>Use PE64 unpacking demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
@@ -555,7 +574,7 @@ function StaticProgress({ status, stage, onCancel }: { status: AppStatus; stage:
   )
 }
 
-function Workspace({ report, dynamicReport, dynamicReports, dynamicProfileId, dynamicStatus, dynamicStage, dynamicError, staticClient, dynamicClient, artifactYara, artifactYaraStatus, artifactYaraError, onScanArtifacts, activeTab, onTabChange, onClose, onExport, onRunDynamic, onRunDynamicProfiles, onSelectDynamicProfile, onCancelDynamic, yaraSource, yaraSourceName, yaraStatus, yaraStage, yaraSummary, yaraReport, yaraError, onYaraSource, onRunYara, onYaraOffset, hexTarget }: {
+function Workspace({ report, dynamicReport, dynamicReports, dynamicProfileId, dynamicStatus, dynamicStage, dynamicError, staticClient, dynamicClient, artifactYara, artifactYaraStatus, artifactYaraError, onScanArtifacts, activeTab, onTabChange, onClose, onExport, onRunDynamic, onRunDynamicProfiles, onSelectDynamicProfile, onCancelDynamic, yaraSource, yaraSourceName, yaraStatus, yaraStage, yaraSummary, yaraReport, yaraError, onYaraSource, onRunYara, onYaraOffset, onCodeOffset, hexTarget }: {
   report: AnalysisReport
   dynamicReport: DynamicReport | null
   dynamicReports: DynamicReport[]
@@ -587,12 +606,14 @@ function Workspace({ report, dynamicReport, dynamicReports, dynamicProfileId, dy
   onYaraSource: (source: string, name: string) => void
   onRunYara: () => void
   onYaraOffset: (offset: number) => void
+  onCodeOffset: (offset: number) => void
   hexTarget: number | null
 }) {
   const tabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: 'summary', label: 'Summary', count: report.findings.length },
     { id: 'structure', label: 'Structure', count: report.sections.length },
     { id: 'symbols', label: 'Symbols', count: report.imports.length + report.exports.length },
+    { id: 'code', label: 'Code', count: report.code.functions.length },
     { id: 'strings', label: 'Strings', count: report.strings.length },
     { id: 'hex', label: 'Hex' },
     { id: 'dynamic', label: 'Dynamic', count: dynamicReport?.api_calls.length },
@@ -624,6 +645,7 @@ function Workspace({ report, dynamicReport, dynamicReports, dynamicProfileId, dy
         {activeTab === 'summary' && <SummaryView report={report} />}
         {activeTab === 'structure' && <StructureView report={report} />}
         {activeTab === 'symbols' && <SymbolsView report={report} />}
+        {activeTab === 'code' && <CodeView report={report} onOffset={onCodeOffset} />}
         {activeTab === 'strings' && <StringsView report={report} />}
         {activeTab === 'hex' && <HexView client={staticClient} sampleSize={report.sample.size} target={hexTarget} />}
         {activeTab === 'dynamic' && (
@@ -975,6 +997,113 @@ function SymbolTable({ records }: { records: SymbolRecord[] }) {
   const pages = Math.max(1, Math.ceil(records.length / PAGE_SIZE))
   if (records.length === 0) return <EmptyState title="No symbols found" text="The binary does not expose symbols of this kind." />
   return <><Table><thead><tr><th>Symbol</th><th>Module</th><th>Kind</th><th>Address / index</th></tr></thead><tbody>{records.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((record, index) => <tr key={`${record.name}-${index}`}><td><code className="strong-code">{record.name}</code></td><td>{record.module ?? '—'}</td><td><span className="tag">{record.kind}</span></td><td><code>{formatOffset(record.address)}</code></td></tr>)}</tbody></Table><Pagination page={page} pages={pages} count={records.length} onPage={setPage} /></>
+}
+
+function CodeView({ report, onOffset }: { report: AnalysisReport; onOffset: (offset: number) => void }) {
+  const defaultMode = report.code.capabilities.length > 0 ? 'capabilities' : 'disassembly'
+  const [mode, setMode] = useState<'capabilities' | 'disassembly' | 'cfg'>(defaultMode)
+  const [selectedAddress, setSelectedAddress] = useState<number | null>(report.code.functions[0]?.address ?? null)
+  useEffect(() => {
+    setMode(report.code.capabilities.length > 0 ? 'capabilities' : 'disassembly')
+    setSelectedAddress(report.code.functions[0]?.address ?? null)
+  }, [report.sample.sha256, report.code.capabilities.length, report.code.functions])
+  const selected = report.code.functions.find((item) => item.address === selectedAddress) ?? report.code.functions[0] ?? null
+  const stats = report.code.stats
+  return <div className="code-layout">
+    <div className="stats-grid">
+      <Stat label="Functions" value={stats.functions.toLocaleString()} detail={`${stats.basic_blocks.toLocaleString()} basic blocks`} />
+      <Stat label="Instructions" value={stats.decoded_instructions.toLocaleString()} detail={`${stats.control_flow_edges.toLocaleString()} CFG edges`} />
+      <Stat label="Capabilities" value={report.code.capabilities.length.toLocaleString()} detail={`${formatBytes(stats.executable_bytes)} executable bytes`} />
+    </div>
+    {stats.truncated && <div className="notice warning-notice"><span>Code analysis reached a deterministic safety limit. The retained functions and capabilities remain usable, but the report is incomplete.</span></div>}
+    {!report.code.disassembly_supported && <div className="notice warning-notice"><span>{report.code.reason ?? 'Disassembly is unavailable for this architecture.'} Import- and string-based capability evidence is still shown.</span></div>}
+    <Section title="Static code analysis" description="Recursive x86/x64 traversal and transparent first-party capability rules; no code is executed.">
+      <div className="subtabs">
+        <button type="button" className={mode === 'capabilities' ? 'active' : ''} onClick={() => setMode('capabilities')}>Capabilities ({report.code.capabilities.length})</button>
+        <button type="button" className={mode === 'disassembly' ? 'active' : ''} disabled={!selected} onClick={() => setMode('disassembly')}>Disassembly ({stats.decoded_instructions})</button>
+        <button type="button" className={mode === 'cfg' ? 'active' : ''} disabled={!selected} onClick={() => setMode('cfg')}>Control flow ({stats.control_flow_edges})</button>
+      </div>
+      {mode === 'capabilities' && <CapabilityView report={report} onOffset={onOffset} />}
+      {mode === 'disassembly' && (selected ? <DisassemblyView functions={report.code.functions} selected={selected} onSelect={setSelectedAddress} onOffset={onOffset} /> : <EmptyState title="No functions discovered" text={report.code.reason ?? 'No valid entry, export, or direct-call targets were found in bounded executable bytes.'} />)}
+      {mode === 'cfg' && (selected ? <CfgView functions={report.code.functions} selected={selected} onSelect={setSelectedAddress} onOffset={onOffset} /> : <EmptyState title="No control-flow graph available" text="A decoded function is required to construct a graph." />)}
+    </Section>
+  </div>
+}
+
+function CapabilityView({ report, onOffset }: { report: AnalysisReport; onOffset: (offset: number) => void }) {
+  if (report.code.capabilities.length === 0) return <EmptyState title="No capabilities matched" text="The bounded first-party rules found no supported import, string, or instruction combination. This is not evidence that the sample is safe." />
+  return <div className="capability-list">{report.code.capabilities.map((capability) => <article className="capability" key={capability.id}>
+    <div className="capability-heading"><div><span className="capability-namespace">{capability.namespace}</span><h3>{capability.name}</h3></div><span className={`tag confidence-${capability.confidence}`}>{capability.confidence} confidence</span></div>
+    <p>{capability.description}</p>
+    <div className="evidence">{capability.evidence.map((evidence, index) => evidence.file_offset != null
+      ? <button className="offset-link" type="button" key={`${evidence.kind}-${evidence.file_offset}-${index}`} onClick={() => onOffset(evidence.file_offset!)}>{evidence.kind} · {evidence.value} · file {formatOffset(evidence.file_offset)}</button>
+      : <code key={`${evidence.kind}-${evidence.address}-${index}`}>{evidence.kind} · {evidence.value}{evidence.address != null ? ` · ${formatOffset(evidence.address)}` : ''}</code>)}</div>
+  </article>)}</div>
+}
+
+function FunctionPicker({ functions, selected, onSelect }: { functions: StaticFunction[]; selected: StaticFunction; onSelect: (address: number) => void }) {
+  const instructionCount = selected.blocks.reduce((total, block) => total + block.instructions.length, 0)
+  return <div className="code-function-toolbar"><label><span>Function</span><select aria-label="Static function" value={selected.address} onChange={(event) => onSelect(Number(event.target.value))}>{functions.map((item) => <option key={item.address} value={item.address}>{item.name} · {formatOffset(item.address)}</option>)}</select></label><div><span className="tag">{selected.source.replaceAll('_', ' ')}</span><small>{selected.blocks.length} blocks · {instructionCount} instructions · {selected.calls.length} calls</small></div></div>
+}
+
+function DisassemblyView({ functions, selected, onSelect, onOffset }: { functions: StaticFunction[]; selected: StaticFunction; onSelect: (address: number) => void; onOffset: (offset: number) => void }) {
+  return <div className="code-detail"><FunctionPicker functions={functions} selected={selected} onSelect={onSelect} /><InstructionTable blocks={selected.blocks} onOffset={onOffset} />{selected.calls.length > 0 && <div className="code-call-list"><strong>Observed call sites</strong>{selected.calls.map((call) => <code key={`${call.instruction_address}-${call.target}`}>{formatOffset(call.instruction_address)} → {call.target != null ? formatOffset(call.target) : 'indirect target'}</code>)}</div>}</div>
+}
+
+function InstructionTable({ blocks, onOffset }: { blocks: StaticBasicBlock[]; onOffset: (offset: number) => void }) {
+  return <Table><thead><tr><th>Address</th><th>File</th><th>Bytes</th><th>Instruction</th><th>Target</th></tr></thead>{blocks.map((block) => <tbody key={block.start}><tr className="block-row"><td colSpan={5}><strong>Basic block {formatOffset(block.start)}</strong><span>{block.instructions.length} instructions</span></td></tr>{block.instructions.map((instruction) => <tr key={`${instruction.address}-${instruction.file_offset}`}><td><code>{formatOffset(instruction.address)}</code></td><td><button className="offset-link" type="button" onClick={() => onOffset(instruction.file_offset)}>{formatOffset(instruction.file_offset)}</button></td><td><code className="instruction-bytes">{instruction.bytes}</code></td><td><code className="strong-code">{instruction.text}</code></td><td><code>{instruction.branch_target != null ? formatOffset(instruction.branch_target) : '—'}</code></td></tr>)}</tbody>)}</Table>
+}
+
+function CfgView({ functions, selected, onSelect, onOffset }: { functions: StaticFunction[]; selected: StaticFunction; onSelect: (address: number) => void; onOffset: (offset: number) => void }) {
+  const visibleBlocks = selected.blocks.slice(0, 64)
+  const [activeBlock, setActiveBlock] = useState(visibleBlocks[0]?.start ?? null)
+  useEffect(() => setActiveBlock(selected.blocks[0]?.start ?? null), [selected.address, selected.blocks])
+  const layout = useMemo(() => buildCfgLayout(selected, visibleBlocks), [selected, visibleBlocks])
+  const block = selected.blocks.find((item) => item.start === activeBlock) ?? visibleBlocks[0] ?? null
+  const marker = `cfg-arrow-${selected.address.toString(16)}`
+  return <div className="cfg-layout"><FunctionPicker functions={functions} selected={selected} onSelect={onSelect} />{selected.blocks.length > visibleBlocks.length && <div className="notice warning-notice"><span>The visual graph shows the first 64 of {selected.blocks.length} blocks. The disassembly retains all bounded blocks.</span></div>}<div className="cfg-scroll"><svg className="cfg-graph" viewBox={`0 0 ${layout.width} ${layout.height}`} width={layout.width} height={layout.height} role="img" aria-label={`Control-flow graph for ${selected.name}`}><defs><marker id={marker} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{layout.edges.map((edge, index) => <path key={`${edge.from}-${edge.to}-${edge.kind}-${index}`} className={`cfg-edge cfg-edge-${edge.kind}`} d={edge.path} markerEnd={`url(#${marker})`} />)}{layout.nodes.map((node) => <g key={node.block.start} className={`cfg-node ${activeBlock === node.block.start ? 'selected' : ''}`} transform={`translate(${node.x} ${node.y})`} role="button" aria-label={`Basic block ${formatOffset(node.block.start)}`} tabIndex={0} onClick={() => setActiveBlock(node.block.start)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setActiveBlock(node.block.start) }}><rect width={layout.nodeWidth} height={layout.nodeHeight} rx="7" /><text x="12" y="22" className="cfg-address">{formatOffset(node.block.start)}</text>{node.block.instructions.slice(0, 3).map((instruction, index) => <text key={instruction.address} x="12" y={43 + index * 16}>{instruction.text.slice(0, 31)}</text>)}</g>)}</svg></div>{block && <div className="cfg-block-detail"><strong>Selected block {formatOffset(block.start)}</strong><InstructionTable blocks={[block]} onOffset={onOffset} /></div>}</div>
+}
+
+function buildCfgLayout(func: StaticFunction, blocks: StaticBasicBlock[]) {
+  const nodeWidth = 246
+  const nodeHeight = 98
+  const horizontalGap = 76
+  const verticalGap = 34
+  const addresses = new Set(blocks.map((block) => block.start))
+  const adjacency = new Map<number, number[]>()
+  for (const edge of func.edges) if (addresses.has(edge.from) && addresses.has(edge.to)) adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge.to])
+  const depth = new Map<number, number>()
+  if (blocks[0]) depth.set(blocks[0].start, 0)
+  const queue = blocks[0] ? [blocks[0].start] : []
+  while (queue.length) {
+    const current = queue.shift()!
+    const nextDepth = (depth.get(current) ?? 0) + 1
+    for (const target of adjacency.get(current) ?? []) if (!depth.has(target)) { depth.set(target, nextDepth); queue.push(target) }
+  }
+  const fallbackDepth = Math.max(0, ...depth.values()) + 1
+  for (const block of blocks) if (!depth.has(block.start)) depth.set(block.start, fallbackDepth)
+  const rows = new Map<number, number>()
+  const positions = new Map<number, { x: number; y: number }>()
+  for (const block of blocks) {
+    const column = depth.get(block.start) ?? 0
+    const row = rows.get(column) ?? 0
+    rows.set(column, row + 1)
+    positions.set(block.start, { x: 22 + column * (nodeWidth + horizontalGap), y: 22 + row * (nodeHeight + verticalGap) })
+  }
+  const nodes = blocks.map((block) => ({ block, ...(positions.get(block.start) ?? { x: 22, y: 22 }) }))
+  const edges = func.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge) => {
+    const from = positions.get(edge.from)!
+    const to = positions.get(edge.to)!
+    const x1 = from.x + nodeWidth
+    const y1 = from.y + nodeHeight / 2
+    const x2 = to.x
+    const y2 = to.y + nodeHeight / 2
+    const bend = Math.max(40, Math.abs(x2 - x1) / 2)
+    return { ...edge, path: `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}` }
+  })
+  const maxColumn = Math.max(0, ...depth.values())
+  const maxRows = Math.max(1, ...rows.values())
+  return { nodes, edges, nodeWidth, nodeHeight, width: Math.max(760, 44 + (maxColumn + 1) * nodeWidth + maxColumn * horizontalGap), height: Math.max(260, 44 + maxRows * nodeHeight + (maxRows - 1) * verticalGap) }
 }
 
 function StringsView({ report }: { report: AnalysisReport }) {

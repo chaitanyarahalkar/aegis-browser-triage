@@ -11,6 +11,13 @@ async function loadSafeDemo(page: import('@playwright/test').Page) {
   await expect(page.locator('.sample-title')).toContainText('PE · 32-bit X86')
 }
 
+async function loadCodeDemo(page: import('@playwright/test').Page) {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Use code analysis demo' }).click()
+  await expect(page.getByText('aegis-safe-code-analysis-pe64.exe')).toBeVisible()
+  await expect(page.locator('.sample-title')).toContainText('PE · 64-bit X86_64')
+}
+
 async function runDynamic(page: import('@playwright/test').Page) {
   await page.getByRole('tab', { name: /^Dynamic/ }).click()
   await page.getByRole('button', { name: 'Run selected profile' }).click()
@@ -52,6 +59,39 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
   await expect(page.getByText('Dynamic v14', { exact: true })).toBeVisible()
+})
+
+test('explores static capabilities, disassembly, and control flow', async ({ page, isMobile }) => {
+  await loadCodeDemo(page)
+  await page.getByRole('tab', { name: /^Code/ }).click()
+  await expect(page.getByRole('heading', { name: 'Static code analysis' })).toBeVisible()
+  await expect(page.getByText('Execute a process or command', { exact: true })).toBeVisible()
+  await expect(page.getByText('Communicate over a network', { exact: true })).toBeVisible()
+  await expect(page.getByText('high confidence', { exact: true })).toBeVisible()
+  if (isMobile) {
+    await expect(page.getByText('4 CFG edges', { exact: true })).toBeVisible()
+    return
+  }
+
+  await page.getByRole('button', { name: /^Disassembly/ }).click()
+  await expect(page.getByLabel('Static function')).toHaveValue('4096')
+  await expect(page.getByRole('cell', { name: /call /i }).first()).toBeVisible()
+  await expect(page.locator('.block-row').first()).toContainText('Basic block')
+
+  await page.getByRole('button', { name: /^Control flow/ }).click()
+  await expect(page.locator('.cfg-graph')).toBeVisible()
+  await expect(page.locator('.cfg-node').first()).toBeVisible()
+  await expect(page.locator('.cfg-edge')).toHaveCount(4)
+  await expect(page.getByText(/Selected block 0x/)).toBeVisible()
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export report' }).click()
+  const download = await downloadPromise
+  const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
+  expect(json.static.schema_version).toBe(2)
+  expect(json.static.code.disassembly_supported).toBe(true)
+  expect(json.static.code.functions.length).toBeGreaterThan(0)
+  expect(json.static.code.capabilities.some((item: { id: string }) => item.id === 'process-execution')).toBe(true)
 })
 
 test('runs a PE64 image through the x86-64 interpreter and ABI', async ({ page, isMobile }) => {

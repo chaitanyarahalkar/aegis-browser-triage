@@ -1,3 +1,4 @@
+mod code;
 mod formats;
 mod model;
 
@@ -39,6 +40,15 @@ pub fn analyze(
     let mut parsed = formats::parse(bytes)?;
     let (strings, strings_truncated) = extract_strings(bytes, &options);
     let indicators = extract_indicators(&strings);
+    let code = code::analyze(
+        bytes,
+        &parsed.format,
+        parsed.architecture.as_deref(),
+        &parsed.sections,
+        &parsed.imports,
+        &parsed.exports,
+        &strings,
+    );
 
     add_common_findings(
         &mut parsed.findings,
@@ -73,6 +83,7 @@ pub fn analyze(
         exports: parsed.exports,
         strings,
         indicators,
+        code,
         findings: parsed.findings,
         warnings: parsed.warnings,
         stats: AnalysisStats {

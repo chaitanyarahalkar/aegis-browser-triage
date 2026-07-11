@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const MAX_INPUT_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_SECTIONS: usize = 4_096;
 pub const MAX_COLLECTION_ITEMS: usize = 50_000;
@@ -52,9 +52,92 @@ pub struct AnalysisReport {
     pub exports: Vec<SymbolRecord>,
     pub strings: Vec<ExtractedString>,
     pub indicators: Vec<Indicator>,
+    pub code: CodeAnalysisReport,
     pub findings: Vec<Finding>,
     pub warnings: Vec<AnalysisWarning>,
     pub stats: AnalysisStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeAnalysisReport {
+    pub disassembly_supported: bool,
+    pub architecture: Option<String>,
+    pub reason: Option<String>,
+    pub functions: Vec<StaticFunction>,
+    pub capabilities: Vec<CapabilityMatch>,
+    pub stats: CodeAnalysisStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeAnalysisStats {
+    pub executable_sections: u32,
+    pub executable_bytes: u64,
+    pub decoded_instructions: u32,
+    pub functions: u32,
+    pub basic_blocks: u32,
+    pub control_flow_edges: u32,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticFunction {
+    pub address: u64,
+    pub file_offset: Option<u64>,
+    pub name: String,
+    pub source: String,
+    pub blocks: Vec<StaticBasicBlock>,
+    pub edges: Vec<StaticControlFlowEdge>,
+    pub calls: Vec<StaticCallTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticBasicBlock {
+    pub start: u64,
+    pub end: u64,
+    pub file_offset: Option<u64>,
+    pub instructions: Vec<StaticInstruction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticInstruction {
+    pub address: u64,
+    pub file_offset: u64,
+    pub bytes: String,
+    pub text: String,
+    pub mnemonic: String,
+    pub branch_target: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticControlFlowEdge {
+    pub from: u64,
+    pub to: u64,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaticCallTarget {
+    pub instruction_address: u64,
+    pub target: Option<u64>,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityMatch {
+    pub id: String,
+    pub name: String,
+    pub namespace: String,
+    pub description: String,
+    pub confidence: Confidence,
+    pub evidence: Vec<CapabilityEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityEvidence {
+    pub kind: String,
+    pub value: String,
+    pub address: Option<u64>,
+    pub file_offset: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

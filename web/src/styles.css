@@ -136,6 +136,43 @@ code { font-family: var(--mono); }
 .timeline-filters button { min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: white; color: var(--muted); cursor: pointer; font-size: 11px; }
 .timeline-filters button.active { border-color: #b8c8ef; background: #eef3ff; color: var(--accent); }
 .coverage-layout { display: grid; gap: 18px; }
+.code-layout, .code-detail, .cfg-layout { display: grid; gap: 18px; }
+.capability-list { display: grid; }
+.capability { padding: 17px; border-bottom: 1px solid var(--border); }
+.capability:last-child { border-bottom: 0; }
+.capability-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.capability-heading h3 { margin: 4px 0 0; font-size: 14px; }
+.capability-namespace { color: var(--accent); font: 600 10px/1 var(--mono); }
+.capability p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.confidence-high { color: var(--green); background: #edf8f1; }
+.confidence-medium { color: var(--amber); background: #fff7e6; }
+.confidence-low { color: var(--muted); }
+.code-function-toolbar { padding: 13px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: end; justify-content: space-between; gap: 16px; background: var(--surface-muted); }
+.code-function-toolbar label { width: min(520px, 70%); display: grid; gap: 6px; }
+.code-function-toolbar label > span { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.code-function-toolbar select { min-height: 38px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: white; color: var(--text); font: 11px/1 var(--mono); }
+.code-function-toolbar > div { display: grid; justify-items: end; gap: 6px; }
+.code-function-toolbar small { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.block-row td { padding: 8px 14px; background: #f5f5f2; color: var(--muted); }
+.block-row td strong { margin-right: 10px; color: var(--text); font: 600 10px/1 var(--mono); }
+.block-row td span { font-size: 10px; }
+.instruction-bytes { display: block; max-width: 170px; overflow: hidden; text-overflow: ellipsis; color: var(--faint); }
+.code-call-list { padding: 14px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; border-top: 1px solid var(--border); }
+.code-call-list strong { margin-right: 6px; font-size: 11px; }
+.code-call-list code { padding: 5px 7px; border-radius: 4px; background: var(--surface-muted); color: var(--muted); font-size: 9px; }
+.cfg-scroll { overflow: auto; border-bottom: 1px solid var(--border); background: #fafaf8; }
+.cfg-graph { display: block; min-width: 100%; }
+.cfg-edge { fill: none; stroke: #9a9a93; stroke-width: 1.5; }
+.cfg-edge-branch { stroke: var(--accent); }
+.cfg-edge-fallthrough { stroke: var(--green); }
+.cfg-graph marker path { fill: #777770; }
+.cfg-node { cursor: pointer; outline: none; }
+.cfg-node rect { fill: white; stroke: var(--border-strong); stroke-width: 1; }
+.cfg-node:hover rect, .cfg-node:focus rect { stroke: var(--accent); }
+.cfg-node.selected rect { fill: #eef3ff; stroke: var(--accent); stroke-width: 2; }
+.cfg-node text { fill: #51514c; font: 9px/1 var(--mono); pointer-events: none; }
+.cfg-node .cfg-address { fill: var(--text); font-weight: 700; }
+.cfg-block-detail > strong { display: block; padding: 14px; font-size: 12px; }
 .injection-chain { padding: 16px; display: flex; gap: 8px; overflow-x: auto; background: var(--surface-muted); }
 .injection-chain article { position: relative; min-width: 200px; padding: 13px; border: 1px solid #e6b8b4; border-radius: 7px; background: #fff8f7; display: flex; gap: 10px; }
 .injection-chain article:not(:last-child)::after { content: "→"; position: absolute; right: -9px; top: 45%; z-index: 1; color: var(--red); }
@@ -243,6 +280,9 @@ td code, .strong-code { color: #292925; font: 10px/1.4 var(--mono); }
   .dynamic-intro { grid-template-columns: 1fr; gap: 12px; }
   .artifact-actions { align-items: stretch; flex-direction: column; padding: 0 10px 10px; }
   .artifact-grid { grid-template-columns: 1fr; }
+  .capability-heading, .code-function-toolbar { align-items: stretch; flex-direction: column; }
+  .code-function-toolbar label { width: 100%; }
+  .code-function-toolbar > div { justify-items: start; }
   .yara-toolbar, .yara-run { align-items: stretch; flex-direction: column; }
   .yara-toolbar > div { margin-left: 0; }
   .app-footer { padding: 18px; align-items: flex-start; flex-direction: column; }

@@ -192,6 +192,42 @@ pub fn safe_dynamic_pe64() -> Vec<u8> {
     bytes
 }
 
+/// Harmless PE64 fixture for static function, disassembly, CFG, and capability
+/// analysis. Both branch paths converge on synthetic WinExec/ExitProcess calls;
+/// no host instruction or network operation is ever performed.
+pub fn code_analysis_pe64() -> Vec<u8> {
+    let mut bytes = safe_dynamic_pe64();
+    bytes[0x200..0x400].fill(0);
+    let code = [
+        0x31, 0xc0, // xor eax,eax
+        0x85, 0xc0, // test eax,eax
+        0x74, 0x07, // je branch_b (RVA 0x100d)
+        0xe8, 0x75, 0x00, 0x00, 0x00, // call helper_a (RVA 0x1080)
+        0xeb, 0x09, // jmp converge (RVA 0x1016)
+        0xe8, 0x7e, 0x00, 0x00, 0x00, // branch_b: call helper_b (RVA 0x1090)
+        0xeb, 0x02, // jmp converge
+        0x90, 0x90, // unreachable padding
+        0x48, 0x83, 0xec, 0x28, // converge: shadow space
+        0x48, 0x8d, 0x0d, 0xdf, 0x00, 0x00, 0x00, // lea rcx,[command]
+        0xba, 0x01, 0x00, 0x00, 0x00, // mov edx,SW_SHOWNORMAL
+        0xff, 0x15, 0x64, 0x10, 0x00, 0x00, // call [WinExec]
+        0x31, 0xc9, // xor ecx,ecx
+        0xff, 0x15, 0x64, 0x10, 0x00, 0x00, // call [ExitProcess]
+        0x48, 0x83, 0xc4, 0x28, // add rsp,28h (unreached fallback)
+        0xc3,
+    ];
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+    bytes[0x280..0x286].copy_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3]);
+    bytes[0x290..0x293].copy_from_slice(&[0x31, 0xc0, 0xc3]);
+    write_c_string(
+        &mut bytes,
+        0x300,
+        b"powershell.exe -NoProfile https://cfg.example.test",
+    );
+    bytes[0x350] = 0xc3; // Preserve the harmless TLS callback.
+    bytes
+}
+
 /// Harmless PE64 fixture that exercises the bounded x64 parity surfaces:
 /// artifacts, virtual Windows state, scripted network, provenance, threads,
 /// and vectored exception handling. It contains no native host interaction.

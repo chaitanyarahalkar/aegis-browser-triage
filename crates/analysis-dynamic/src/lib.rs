@@ -340,6 +340,31 @@ mod tests {
     }
 
     #[test]
+    fn pe64_code_analysis_fixture_remains_bounded_and_harmless() {
+        let bytes = fixture::code_analysis_pe64();
+        let report = analyze_dynamic(
+            "aegis-safe-code-analysis-pe64.exe",
+            &bytes,
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            matches!(report.termination, Termination::ExitProcess { code: 0 }),
+            "unexpected termination: {:?}; trace: {:?}",
+            report.termination,
+            report.instructions
+        );
+        assert!(report.api_calls.iter().any(|event| event.name == "WinExec"));
+        assert!(
+            report
+                .processes
+                .iter()
+                .any(|event| event.operation == "execute")
+        );
+        assert!(report.instruction_count < 64);
+    }
+
+    #[test]
     fn pe64_unpacks_generated_code_and_reconstructs_dynamic_imports() {
         let bytes = fixture::unpacking_dynamic_pe64();
         let analysis = analyze_dynamic_with_artifacts(

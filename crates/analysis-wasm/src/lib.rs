@@ -27,6 +27,6 @@ mod tests {
     #[test]
     fn bridge_returns_versioned_json() {
         let json = analyze_sample("fixture.bin", b"fixture data", "{}").unwrap();
-        assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"schema_version\":2"));
     }
 }

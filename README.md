@@ -20,6 +20,9 @@ Static reports include:
 - Sections, permissions, offsets, sizes, and byte entropy
 - Imports, exports, bounded strings, and non-clickable indicators
 - Explainable findings and a paged hex view
+- Bounded x86/x64 recursive disassembly from entry points, exports, and direct calls
+- Function, basic-block, call-site, and control-flow edge records with an interactive CFG
+- Transparent CAPA-style capability matches correlated from imports, strings, and decoded instructions
 
 Dynamic reports currently include:
 
@@ -103,7 +106,8 @@ npm run test:e2e
 
 Open <http://127.0.0.1:4173> after `npm run preview`. `npm run dev` builds all
 Rust engines and starts the development server. Browser tests cover desktop and
-mobile Chromium, dynamic API behavior, YARA compilation and matches, instruction
+mobile Chromium, static disassembly and CFG interaction, capability evidence,
+dynamic API behavior, YARA compilation and matches, instruction
 and memory limits, deterministic environment matrices, runtime artifact capture and
 YARA, CSP, storage, malformed input, export, and a static performance budget.
 

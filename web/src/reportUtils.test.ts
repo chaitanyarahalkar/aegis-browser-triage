@@ -3,11 +3,18 @@ import { formatBytes, formatLabel, formatMetadata, formatOffset, severityCounts 
 import type { AnalysisReport } from './types'
 
 const report: AnalysisReport = {
-  schema_version: 1,
+  schema_version: 2,
   engine_version: '0.1.0',
   sample: { name: 'demo.wasm', size: 42, detected_format: 'web_assembly', architecture: 'WebAssembly', sha256: 'a', sha1: 'b', md5: 'c' },
   format: { kind: 'web_assembly', valid: true, custom_sections: ['meta'], entry_point: 8192 },
   sections: [], imports: [], exports: [], strings: [], indicators: [], warnings: [],
+  code: {
+    disassembly_supported: false,
+    architecture: 'WebAssembly',
+    reason: 'Disassembly currently supports x86 and x86-64 binaries.',
+    functions: [], capabilities: [],
+    stats: { executable_sections: 0, executable_bytes: 0, decoded_instructions: 0, functions: 0, basic_blocks: 0, control_flow_edges: 0, truncated: false },
+  },
   findings: [
     { id: 'one', title: 'one', severity: 'high', confidence: 'high', rationale: '', evidence: [] },
     { id: 'two', title: 'two', severity: 'info', confidence: 'high', rationale: '', evidence: [] },
@@ -39,4 +46,3 @@ describe('report formatting', () => {
     expect(formatMetadata(report)).toContainEqual(['Entry Point', '8,192  ·  0x2000'])
   })
 })
-

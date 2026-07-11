@@ -21,6 +21,51 @@ fn parses_minimal_pe64_and_detects_wx_section() {
 }
 
 #[test]
+fn discovers_functions_and_builds_a_bounded_control_flow_graph() {
+    let mut bytes = minimal_pe64();
+    bytes[0x200..0x215].copy_from_slice(&[
+        0x31, 0xc0, // xor eax,eax
+        0x85, 0xc0, // test eax,eax
+        0x74, 0x06, // je 0x100c
+        0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax,1
+        0xc3, // ret
+        0xe8, 0x01, 0x00, 0x00, 0x00, // call 0x1012
+        0xc3, // ret
+        0x31, 0xc0, // xor eax,eax
+        0xc3, // ret
+    ]);
+    let report = analyze("cfg.exe", &bytes, &AnalysisOptions::default()).unwrap();
+    assert!(report.code.disassembly_supported);
+    assert_eq!(report.code.architecture.as_deref(), Some("x86-64"));
+    let entry = report
+        .code
+        .functions
+        .iter()
+        .find(|function| function.address == 0x1000)
+        .expect("entry function");
+    assert!(entry.blocks.len() >= 3);
+    assert!(entry.edges.iter().any(|edge| edge.kind == "branch"));
+    assert!(entry.edges.iter().any(|edge| edge.kind == "fallthrough"));
+    assert!(
+        report
+            .code
+            .functions
+            .iter()
+            .any(|function| function.address == 0x1012 && function.source == "direct_call")
+    );
+}
+
+#[test]
+fn bounds_a_long_linear_code_region() {
+    let mut bytes = minimal_pe64();
+    bytes[0x200..0x400].fill(0x90);
+    let report = analyze("linear.exe", &bytes, &AnalysisOptions::default()).unwrap();
+    assert_eq!(report.code.stats.decoded_instructions, 512);
+    assert!(report.code.stats.truncated);
+    assert_eq!(report.code.functions[0].blocks[0].instructions.len(), 512);
+}
+
+#[test]
 fn parses_minimal_elf64() {
     let report = analyze("fixture.elf", &minimal_elf64(), &AnalysisOptions::default()).unwrap();
     assert_eq!(report.sample.detected_format, BinaryFormat::Elf);
@@ -76,6 +121,8 @@ fn parses_supplied_arm64_macos_fixture() {
             .contains("ARM64")
     );
     assert!(!report.sections.is_empty());
+    assert!(!report.code.disassembly_supported);
+    assert!(report.code.functions.is_empty());
 }
 
 #[test]
@@ -101,6 +148,55 @@ fn parses_supplied_pe64_dynamic_fixture() {
             .contains("X86_64")
     );
     assert!(report.imports.iter().any(|item| item.name == "WinExec"));
+    assert!(report.code.disassembly_supported);
+    assert!(!report.code.functions.is_empty());
+    assert!(report.code.stats.decoded_instructions > 0);
+    assert!(
+        report
+            .code
+            .capabilities
+            .iter()
+            .any(|capability| capability.id == "process-execution")
+    );
+}
+
+#[test]
+fn parses_the_code_analysis_demo_with_branching_and_capabilities() {
+    let bytes = include_bytes!("../../../web/public/fixtures/aegis-safe-code-analysis-pe64.exe");
+    let report = analyze(
+        "aegis-safe-code-analysis-pe64.exe",
+        bytes,
+        &AnalysisOptions::default(),
+    )
+    .unwrap();
+    assert!(report.code.disassembly_supported);
+    assert!(report.code.functions.len() >= 3);
+    assert!(report.code.stats.basic_blocks >= 4);
+    assert!(report.code.stats.control_flow_edges >= 4);
+    assert!(
+        report
+            .code
+            .functions
+            .iter()
+            .flat_map(|function| &function.calls)
+            .filter(|call| call.target.is_some())
+            .count()
+            >= 2
+    );
+    assert!(
+        report
+            .code
+            .capabilities
+            .iter()
+            .any(|capability| capability.id == "process-execution")
+    );
+    assert!(
+        report
+            .code
+            .capabilities
+            .iter()
+            .any(|capability| capability.id == "network-communication")
+    );
 }
 
 #[test]
