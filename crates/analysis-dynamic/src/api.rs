@@ -31,6 +31,7 @@ pub fn signature(name: &str) -> ApiSignature {
         | "getcommandlinew"
         | "getlasterror" => (0, true),
         "exitprocess"
+        | "exitthread"
         | "sleep"
         | "getmodulehandlea"
         | "getmodulehandlew"
@@ -63,6 +64,7 @@ pub fn signature(name: &str) -> ApiSignature {
         "regopenkeyexa" | "regopenkeyexw" | "internetopena" | "internetopenw" | "writefile"
         | "readfile" => (5, true),
         "regsetvalueexa" | "regsetvalueexw" | "internetopenurla" | "internetopenurlw" => (6, true),
+        "createthread" => (6, true),
         "createfilea" | "createfilew" => (7, true),
         "createprocessa" | "createprocessw" => (10, true),
         "openprocess" | "queueuserapc" => (3, true),

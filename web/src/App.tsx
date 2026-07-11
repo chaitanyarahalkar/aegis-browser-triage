@@ -189,6 +189,19 @@ export default function App() {
     }
   }, [inspectFile])
 
+  const analyzeThreadsDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-threads-pe32.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Thread fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Thread fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
   const runDynamicAnalysis = useCallback(async () => {
     if (!currentFile) return
     const run = ++dynamicRun.current
@@ -318,6 +331,7 @@ export default function App() {
               analyzeDemo={analyzeDemo}
               analyzeArtifactDemo={analyzeArtifactDemo}
               analyzeSehDemo={analyzeSehDemo}
+              analyzeThreadsDemo={analyzeThreadsDemo}
             />
             <div className="privacy-row">
               <span>No uploads</span>
@@ -385,7 +399,7 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
@@ -393,6 +407,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
   analyzeDemo: () => Promise<void>
   analyzeArtifactDemo: () => Promise<void>
   analyzeSehDemo: () => Promise<void>
+  analyzeThreadsDemo: () => Promise<void>
 }) {
   return (
     <div
@@ -416,6 +431,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeSehDemo()}>Use SEH demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzeThreadsDemo()}>Use threads demo</button>
       </div>
       <input
         ref={inputRef}
@@ -597,7 +613,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'profiles'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
@@ -656,6 +672,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
         <button className={view === 'artifacts' ? 'active' : ''} type="button" onClick={() => setView('artifacts')}>Artifacts ({report.artifacts.length})</button>
         <button className={view === 'unpacking' ? 'active' : ''} type="button" onClick={() => setView('unpacking')}>Unpacking ({report.payload_generations.length})</button>
         <button className={view === 'exceptions' ? 'active' : ''} type="button" onClick={() => setView('exceptions')}>Exceptions ({report.exceptions.length})</button>
+        <button className={view === 'threads' ? 'active' : ''} type="button" onClick={() => setView('threads')}>Threads ({report.threads.length})</button>
         {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
@@ -666,9 +683,14 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
       {view === 'artifacts' && <ArtifactsView report={report} client={client} yara={artifactYara} status={artifactYaraStatus} error={artifactYaraError} onScan={onScanArtifacts} onTimeline={(sequence) => { setTimelineTarget(sequence); setView('timeline') }} />}
       {view === 'unpacking' && <UnpackingView report={report} yara={artifactYara} status={artifactYaraStatus} onScan={onScanArtifacts} />}
       {view === 'exceptions' && <ExceptionView report={report} />}
+      {view === 'threads' && <ThreadView report={report} />}
       {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
+}
+
+function ThreadView({ report }: { report: DynamicReport }) {
+  return <div className="generation-layout"><div className="stats-grid"><Stat label="Guest threads" value={report.threads.length.toLocaleString()} detail="64 maximum" /><Stat label="Scheduler events" value={report.thread_events.length.toLocaleString()} detail="100-instruction quantum" /><Stat label="Terminated" value={report.threads.filter((thread) => thread.state === 'terminated').length.toLocaleString()} detail="Deterministic exits" /></div><Section title="Guest thread states" description="Threads share synthetic process memory while registers, stacks, and TEB/SEH state remain isolated."><Table><thead><tr><th>TID</th><th>Start</th><th>Parameter</th><th>State</th><th>Instructions</th><th>Exit code</th></tr></thead><tbody>{report.threads.map((thread) => <tr key={thread.tid}><td>{thread.tid}</td><td><code>{formatOffset(thread.start_address)}</code></td><td><code>{formatOffset(thread.parameter)}</code></td><td><span className="tag">{thread.state}</span></td><td>{thread.instruction_count.toLocaleString()}</td><td>{thread.exit_code ?? '—'}</td></tr>)}</tbody></Table></Section><Section title="Scheduler timeline" description="Creation, deterministic context switches, and exits are recorded without host threads."><Table><thead><tr><th>#</th><th>TID</th><th>Operation</th><th>Instruction</th><th>Start</th><th>Parameter</th></tr></thead><tbody>{report.thread_events.map((event) => <tr key={event.sequence}><td>{event.sequence + 1}</td><td>{event.tid}</td><td>{event.operation}</td><td>{event.instruction.toLocaleString()}</td><td><code>{formatOffset(event.start_address)}</code></td><td><code>{formatOffset(event.parameter)}</code></td></tr>)}</tbody></Table></Section></div>
 }
 
 function ExceptionView({ report }: { report: DynamicReport }) {

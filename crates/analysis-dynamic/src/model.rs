@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 6;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 7;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -209,6 +209,8 @@ pub struct DynamicReport {
     pub injection: Vec<InjectionEvent>,
     pub persistence: Vec<PersistenceEvent>,
     pub exceptions: Vec<ExceptionEvent>,
+    pub threads: Vec<ThreadSummary>,
+    pub thread_events: Vec<ThreadEvent>,
     pub artifacts: Vec<ArtifactSummary>,
     pub artifact_stats: ArtifactStats,
     pub payload_generations: Vec<PayloadGeneration>,
@@ -324,6 +326,27 @@ pub struct ExceptionEvent {
     pub establisher_frame: Option<u32>,
     pub disposition: Option<i32>,
     pub outcome: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadSummary {
+    pub tid: u32,
+    pub start_address: u32,
+    pub parameter: u32,
+    pub state: String,
+    pub instruction_count: u64,
+    pub exit_code: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadEvent {
+    pub sequence: u64,
+    pub tid: u32,
+    pub operation: String,
+    pub instruction: u64,
+    pub virtual_time_ms: u64,
+    pub start_address: u32,
+    pub parameter: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

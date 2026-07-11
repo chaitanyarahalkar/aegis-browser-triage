@@ -3,7 +3,7 @@ use crate::{
     DynamicOptions, DynamicReport, DynamicSeverity, ExceptionEvent, ExecutionCoverage,
     ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent, InstructionEvent,
     MemoryEvent, NetworkEvent, NetworkMode, PersistenceEvent, ProcessEvent, RegistryEvent,
-    Termination, TimelineEvent,
+    Termination, ThreadEvent, ThreadSummary, TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
     cpu::Cpu,
@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 const ENTRY_RETURN_SENTINEL: u32 = 0xffff_fff0;
 const TLS_RETURN_SENTINEL: u32 = 0xffff_ffe0;
 const EXCEPTION_RETURN_SENTINEL: u32 = 0xffff_ffd0;
+const THREAD_RETURN_SENTINEL: u32 = 0xffff_ffc0;
 const HEAP_BASE: u32 = 0x1000_0000;
 const DYNAMIC_API_BASE: u32 = 0x7100_0000;
 const PROCESS_ENV_BASE: u32 = 0x2000_0000;
@@ -32,6 +33,10 @@ const EXCEPTION_RECORD_BASE: u32 = EXCEPTION_SCRATCH_BASE;
 const EXCEPTION_CONTEXT_BASE: u32 = EXCEPTION_SCRATCH_BASE + 0x100;
 const MAX_EXCEPTION_EVENTS: usize = 128;
 const MAX_SEH_DEPTH: usize = 16;
+const MAX_GUEST_THREADS: usize = 64;
+const MAX_THREAD_EVENTS: usize = 4_096;
+const THREAD_QUANTUM: u64 = 100;
+const THREAD_STACK_SIZE: usize = 64 * 1024;
 
 pub(crate) fn run(
     _name: String,
@@ -89,14 +94,15 @@ pub(crate) fn run(
         network_mode: environment.network_mode.description().into(),
         environment: environment.clone(),
     };
+    let main_cpu = Cpu {
+        eip: loaded.entry_point,
+        esp: STACK_TOP,
+        ebp: STACK_TOP,
+        fs_base: TEB_BASE,
+        ..Cpu::default()
+    };
     let mut machine = Machine {
-        cpu: Cpu {
-            eip: loaded.entry_point,
-            esp: STACK_TOP,
-            ebp: STACK_TOP,
-            fs_base: TEB_BASE,
-            ..Cpu::default()
-        },
+        cpu: main_cpu.clone(),
         memory: loaded.memory,
         imports: loaded.imports,
         options,
@@ -132,10 +138,24 @@ pub(crate) fn run(
         pending_exception: None,
         vectored_handlers: Vec::new(),
         queued_exception: None,
+        thread_states: vec![GuestThread {
+            tid: 1,
+            start_address: loaded.entry_point,
+            parameter: 0,
+            cpu: main_cpu,
+            state: GuestThreadState::Runnable,
+            instruction_count: 0,
+            exit_code: None,
+        }],
+        thread_events: Vec::new(),
+        current_thread: 0,
+        thread_exit_requested: None,
+        next_thread_switch: THREAD_QUANTUM,
     };
     machine.start_execution()?;
     machine.execute();
     machine.capture_final_artifacts();
+    machine.save_current_thread();
 
     let mut findings = machine.build_findings();
     let termination = machine
@@ -203,6 +223,12 @@ pub(crate) fn run(
         injection: machine.injection,
         persistence: machine.persistence,
         exceptions: machine.exceptions,
+        threads: machine
+            .thread_states
+            .iter()
+            .map(GuestThread::summary)
+            .collect(),
+        thread_events: machine.thread_events,
         artifacts: artifact_summaries,
         artifact_stats,
         payload_generations,
@@ -262,6 +288,46 @@ struct Machine {
     pending_exception: Option<PendingException>,
     vectored_handlers: Vec<u32>,
     queued_exception: Option<(u32, String)>,
+    thread_states: Vec<GuestThread>,
+    thread_events: Vec<ThreadEvent>,
+    current_thread: usize,
+    thread_exit_requested: Option<u32>,
+    next_thread_switch: u64,
+}
+
+#[derive(Clone)]
+struct GuestThread {
+    tid: u32,
+    start_address: u32,
+    parameter: u32,
+    cpu: Cpu,
+    state: GuestThreadState,
+    instruction_count: u64,
+    exit_code: Option<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GuestThreadState {
+    Runnable,
+    Terminated,
+}
+
+impl GuestThread {
+    fn summary(&self) -> ThreadSummary {
+        ThreadSummary {
+            tid: self.tid,
+            start_address: self.start_address,
+            parameter: self.parameter,
+            state: if self.state == GuestThreadState::Runnable {
+                "runnable"
+            } else {
+                "terminated"
+            }
+            .into(),
+            instruction_count: self.instruction_count,
+            exit_code: self.exit_code,
+        }
+    }
 }
 
 struct PendingException {
@@ -279,6 +345,18 @@ struct PendingException {
 impl Machine {
     fn execute(&mut self) {
         while self.termination.is_none() && self.instruction_count < self.options.max_instructions {
+            if self.pending_exception.is_none() && self.instruction_count >= self.next_thread_switch
+            {
+                self.schedule_next_thread(true);
+                self.next_thread_switch = self.next_thread_switch.saturating_add(THREAD_QUANTUM);
+            }
+            if self.cpu.eip == THREAD_RETURN_SENTINEL {
+                self.finish_current_thread(self.cpu.eax);
+                if !self.schedule_next_thread(false) {
+                    self.termination = Some(Termination::ReturnedFromEntryPoint);
+                }
+                continue;
+            }
             if self.cpu.eip == ENTRY_RETURN_SENTINEL {
                 self.termination = Some(Termination::ReturnedFromEntryPoint);
                 break;
@@ -354,6 +432,9 @@ impl Machine {
             }
             self.cpu.eip = instruction.next_ip32();
             self.instruction_count += 1;
+            if let Some(thread) = self.thread_states.get_mut(self.current_thread) {
+                thread.instruction_count = thread.instruction_count.saturating_add(1);
+            }
             if let Err(error) = self.execute_instruction(&instruction) {
                 let fallback = match error {
                     DynamicError::MemoryRead { .. }
@@ -408,6 +489,140 @@ impl Machine {
             vectored_index: (!self.vectored_handlers.is_empty()).then_some(0),
         };
         self.begin_exception_handler(pending)
+    }
+
+    fn save_current_thread(&mut self) {
+        if let Some(thread) = self.thread_states.get_mut(self.current_thread) {
+            thread.cpu = self.cpu.clone();
+        }
+    }
+
+    fn schedule_next_thread(&mut self, record: bool) -> bool {
+        self.save_current_thread();
+        let count = self.thread_states.len();
+        let Some(next) = (1..=count)
+            .map(|offset| (self.current_thread + offset) % count)
+            .find(|index| self.thread_states[*index].state == GuestThreadState::Runnable)
+        else {
+            return false;
+        };
+        if next != self.current_thread {
+            self.current_thread = next;
+            self.cpu = self.thread_states[next].cpu.clone();
+            if record {
+                self.record_thread_event("scheduled", next);
+            }
+        }
+        true
+    }
+
+    fn finish_current_thread(&mut self, exit_code: u32) {
+        if let Some(thread) = self.thread_states.get_mut(self.current_thread) {
+            thread.cpu = self.cpu.clone();
+            thread.state = GuestThreadState::Terminated;
+            thread.exit_code = Some(exit_code);
+        }
+        self.record_thread_event("exited", self.current_thread);
+    }
+
+    fn terminate_all_threads(&mut self, exit_code: u32) {
+        self.save_current_thread();
+        let active: Vec<_> = self
+            .thread_states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, thread)| {
+                (thread.state == GuestThreadState::Runnable).then_some(index)
+            })
+            .collect();
+        for index in active {
+            self.thread_states[index].state = GuestThreadState::Terminated;
+            self.thread_states[index].exit_code = Some(exit_code);
+            self.record_thread_event("process_exit", index);
+        }
+    }
+
+    fn record_thread_event(&mut self, operation: &str, index: usize) {
+        if self.thread_events.len() >= MAX_THREAD_EVENTS {
+            self.truncated = true;
+            return;
+        }
+        let thread = &self.thread_states[index];
+        self.thread_events.push(ThreadEvent {
+            sequence: self.thread_events.len() as u64,
+            tid: thread.tid,
+            operation: operation.into(),
+            instruction: self.instruction_count,
+            virtual_time_ms: self.virtual_time_ms,
+            start_address: thread.start_address,
+            parameter: thread.parameter,
+        });
+    }
+
+    fn create_guest_thread(&mut self, start_address: u32, parameter: u32) -> u32 {
+        if self.thread_states.len() >= MAX_GUEST_THREADS
+            || self.memory.fetch(start_address, 1).is_err()
+        {
+            return 0;
+        }
+        let tid = self.thread_states.len() as u32 + 1;
+        let stack_base = 0x6000_0000u32.saturating_add(tid.saturating_mul(0x20_000));
+        let teb_base = 0x7ffd_0000u32.saturating_sub(tid.saturating_mul(0x2000));
+        if self
+            .memory
+            .map(
+                stack_base,
+                THREAD_STACK_SIZE,
+                Permissions::READ_WRITE,
+                format!("thread {tid} stack"),
+            )
+            .is_err()
+            || self
+                .memory
+                .map(
+                    teb_base,
+                    0x1000,
+                    Permissions::READ_WRITE,
+                    format!("thread {tid} TEB"),
+                )
+                .is_err()
+        {
+            return 0;
+        }
+        let _ = self.memory.write_force(teb_base, &u32::MAX.to_le_bytes());
+        let _ = self
+            .memory
+            .write_force(teb_base + 0x18, &teb_base.to_le_bytes());
+        let _ = self
+            .memory
+            .write_force(teb_base + 0x30, &PEB_BASE.to_le_bytes());
+        let top = stack_base
+            .saturating_add(THREAD_STACK_SIZE as u32)
+            .saturating_sub(16);
+        let mut cpu = Cpu {
+            eip: start_address,
+            esp: top,
+            ebp: top,
+            fs_base: teb_base,
+            ..Cpu::default()
+        };
+        if cpu.push(&mut self.memory, parameter).is_err()
+            || cpu.push(&mut self.memory, THREAD_RETURN_SENTINEL).is_err()
+        {
+            return 0;
+        }
+        self.thread_states.push(GuestThread {
+            tid,
+            start_address,
+            parameter,
+            cpu,
+            state: GuestThreadState::Runnable,
+            instruction_count: 0,
+            exit_code: None,
+        });
+        let index = self.thread_states.len() - 1;
+        self.record_thread_event("created", index);
+        tid
     }
 
     fn begin_exception_handler(&mut self, mut pending: PendingException) -> bool {
@@ -1450,6 +1665,12 @@ impl Machine {
         {
             self.termination = Some(Termination::Halted);
         }
+        if let Some(code) = self.thread_exit_requested.take() {
+            self.finish_current_thread(code);
+            if !self.schedule_next_thread(false) {
+                self.termination = Some(Termination::ReturnedFromEntryPoint);
+            }
+        }
         Ok(())
     }
 
@@ -1540,10 +1761,20 @@ impl Machine {
         match name {
             "exitprocess" => {
                 let code = args.first().copied().unwrap_or(0);
+                self.terminate_all_threads(code);
                 self.termination = Some(Termination::ExitProcess { code });
                 Ok((
                     0,
                     format!("Process exited with code {code}"),
+                    vec![code.to_string()],
+                ))
+            }
+            "exitthread" => {
+                let code = args.first().copied().unwrap_or(0);
+                self.thread_exit_requested = Some(code);
+                Ok((
+                    0,
+                    format!("Thread requested exit with code {code}"),
                     vec![code.to_string()],
                 ))
             }
@@ -1683,7 +1914,41 @@ impl Machine {
                 ))
             }
             "getcurrentprocessid" => Ok((1337, "Returned synthetic process ID".into(), Vec::new())),
-            "getcurrentthreadid" => Ok((1, "Returned synthetic thread ID".into(), Vec::new())),
+            "getcurrentthreadid" => {
+                let tid = self
+                    .thread_states
+                    .get(self.current_thread)
+                    .map_or(1, |thread| thread.tid);
+                Ok((tid, "Returned synthetic thread ID".into(), Vec::new()))
+            }
+            "createthread" => {
+                let start = args.get(2).copied().unwrap_or(0);
+                let parameter = args.get(3).copied().unwrap_or(0);
+                let tid = self.create_guest_thread(start, parameter);
+                if let Some(pointer) = args.get(5).copied().filter(|pointer| *pointer != 0) {
+                    let _ = self.memory.write_u32(pointer, tid);
+                }
+                let handle = if tid == 0 {
+                    0
+                } else {
+                    self.windows
+                        .allocate(HandleResource::Thread { tid })
+                        .unwrap_or(0)
+                };
+                Ok((
+                    handle,
+                    if tid == 0 {
+                        "CreateThread failed safely".into()
+                    } else {
+                        format!("Created runnable guest thread {tid} at 0x{start:08x}")
+                    },
+                    vec![
+                        format!("0x{start:08x}"),
+                        format!("0x{parameter:08x}"),
+                        tid.to_string(),
+                    ],
+                ))
+            }
             "getprocessheap" => Ok((0x50, "Returned synthetic process heap".into(), Vec::new())),
             "getcommandlinea" => Ok((
                 COMMAND_LINE_A,
@@ -3377,6 +3642,9 @@ impl Machine {
         if !self.exceptions.is_empty() {
             findings.push(DynamicFinding { id: "exception-dispatch".into(), title: "Structured exception handling observed".into(), severity: DynamicSeverity::Medium, rationale: "The sample registered or reached guest exception handlers. Handlers executed only inside the bounded interpreter.".into(), evidence: self.exceptions.iter().take(20).map(|event| format!("{} at 0x{:08x} -> {}", event.name, event.address, event.outcome)).collect() });
         }
+        if self.thread_states.len() > 1 {
+            findings.push(DynamicFinding { id: "guest-threads".into(), title: "Guest thread execution observed".into(), severity: DynamicSeverity::Medium, rationale: "Created threads were scheduled deterministically with isolated registers, stacks, and synthetic TEBs over shared guest memory.".into(), evidence: self.thread_states.iter().skip(1).map(|thread| format!("thread {} start 0x{:08x} · {} instructions", thread.tid, thread.start_address, thread.instruction_count)).collect() });
+        }
         if findings.is_empty() {
             findings.push(DynamicFinding { id: "no-modeled-behavior".into(), title: "No modeled high-level behavior observed".into(), severity: DynamicSeverity::Info, rationale: "Execution may have completed, hit an unsupported instruction, or avoided the modeled APIs.".into(), evidence: vec![format!("{} instructions emulated", self.instruction_count)] });
         }
@@ -3513,13 +3781,14 @@ mod tests {
         memory
             .map(0x8000, 0x1000, Permissions::READ_WRITE, "test stack")
             .unwrap();
+        let cpu = Cpu {
+            eip: 0x1000,
+            esp: 0x8f00,
+            ebp: 0x8f00,
+            ..Cpu::default()
+        };
         Machine {
-            cpu: Cpu {
-                eip: 0x1000,
-                esp: 0x8f00,
-                ebp: 0x8f00,
-                ..Cpu::default()
-            },
+            cpu: cpu.clone(),
             memory,
             imports: BTreeMap::new(),
             options: DynamicOptions {
@@ -3559,6 +3828,19 @@ mod tests {
             pending_exception: None,
             vectored_handlers: Vec::new(),
             queued_exception: None,
+            thread_states: vec![GuestThread {
+                tid: 1,
+                start_address: 0x1000,
+                parameter: 0,
+                cpu,
+                state: GuestThreadState::Runnable,
+                instruction_count: 0,
+                exit_code: None,
+            }],
+            thread_events: Vec::new(),
+            current_thread: 0,
+            thread_exit_requested: None,
+            next_thread_switch: THREAD_QUANTUM,
         }
     }
 

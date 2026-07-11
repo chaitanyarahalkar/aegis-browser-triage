@@ -121,7 +121,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 6);
+        assert_eq!(report.schema_version, 7);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -264,6 +264,40 @@ mod tests {
                 .findings
                 .iter()
                 .any(|finding| finding.id == "exception-dispatch")
+        );
+    }
+
+    #[test]
+    fn schedules_a_guest_thread_with_isolated_cpu_stack_and_teb() {
+        let report = analyze_dynamic(
+            "threads.exe",
+            &fixture::threads_pe32(),
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert_eq!(report.threads.len(), 2);
+        let child = report
+            .threads
+            .iter()
+            .find(|thread| thread.tid == 2)
+            .unwrap();
+        assert_eq!(child.state, "terminated");
+        assert_eq!(child.exit_code, Some(42));
+        assert!(
+            report
+                .thread_events
+                .iter()
+                .any(|event| event.tid == 2 && event.operation == "scheduled")
+        );
+        assert!(
+            report
+                .thread_events
+                .iter()
+                .any(|event| event.tid == 2 && event.operation == "exited")
         );
     }
 

@@ -163,6 +163,8 @@ export interface DynamicExceptionEvent {
   disposition: number | null
   outcome: string
 }
+export interface DynamicThreadSummary { tid: number; start_address: number; parameter: number; state: string; instruction_count: number; exit_code: number | null }
+export interface DynamicThreadEvent { sequence: number; tid: number; operation: string; instruction: number; virtual_time_ms: number; start_address: number; parameter: number }
 
 export interface DynamicProcessEvent {
   operation: string
@@ -249,6 +251,8 @@ export interface DynamicReport {
   injection: DynamicInjectionEvent[]
   persistence: DynamicPersistenceEvent[]
   exceptions: DynamicExceptionEvent[]
+  threads: DynamicThreadSummary[]
+  thread_events: DynamicThreadEvent[]
   artifacts: ArtifactSummary[]
   artifact_stats: { count: number; retained_bytes: number; truncated: boolean }
   payload_generations: PayloadGeneration[]

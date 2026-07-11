@@ -140,6 +140,27 @@ pub fn seh_pe32() -> Vec<u8> {
     bytes
 }
 
+pub fn threads_pe32() -> Vec<u8> {
+    let mut bytes = safe_dynamic_pe32();
+    let mut code = vec![
+        0x6a, 0x00, // thread ID pointer
+        0x6a, 0x00, // creation flags
+        0x6a, 0x2a, // parameter
+        0x68, 0x00, 0x11, 0x40, 0x00, // thread start
+        0x6a, 0x00, // default stack
+        0x6a, 0x00, // security attributes
+        0xff, 0x15, 0x60, 0x20, 0x40, 0x00, // CreateThread
+    ];
+    code.extend(std::iter::repeat_n(0x90, 100));
+    code.extend([0x6a, 0x00, 0xff, 0x15, 0x6c, 0x20, 0x40, 0x00, 0xf4]);
+    let thread = [0x8b, 0x44, 0x24, 0x04, 0xc2, 0x04, 0x00]; // return parameter as exit code
+    bytes[0x200..0x400].fill(0);
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+    bytes[0x300..0x300 + thread.len()].copy_from_slice(&thread);
+    write_hint_name(&mut bytes, 0x490, b"CreateThread");
+    bytes
+}
+
 pub fn runtime_artifact_pe32() -> Vec<u8> {
     let mut bytes = safe_dynamic_pe32();
     let payload = b"MZ AEGIS_SAFE_RUNTIME_ARTIFACT powershell https://artifact.example.test\0";

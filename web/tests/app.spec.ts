@@ -51,7 +51,7 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v6', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v7', { exact: true })).toBeVisible()
 })
 
 test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
@@ -149,7 +149,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(6)
+  expect(json.dynamic.schema_version).toBe(7)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
@@ -217,6 +217,19 @@ test('dispatches a breakpoint through bounded guest SEH', async ({ page, isMobil
   await expect(page.getByText('breakpoint', { exact: true })).toBeVisible()
   await expect(page.getByText('Continue execution', { exact: true })).toBeVisible()
   await expect(page.getByText('continued execution', { exact: true })).toBeVisible()
+})
+
+test('schedules a bounded guest thread with isolated state', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop thread inspection workflow')
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Use threads demo' }).click()
+  await expect(page.getByText('aegis-safe-threads-pe32.exe')).toBeVisible()
+  await runDynamic(page)
+  await page.getByRole('button', { name: 'Threads (2)' }).click()
+  await expect(page.getByRole('heading', { name: 'Guest thread states' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: '42', exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'scheduled', exact: true })).toBeVisible()
+  await expect(page.getByText('100-instruction quantum', { exact: true })).toBeVisible()
 })
 
 test('does not contact third parties or persist sample data', async ({ page }) => {

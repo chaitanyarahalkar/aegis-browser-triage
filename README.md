@@ -41,6 +41,8 @@ Dynamic reports currently include:
   including parent links, execution state, executable heaps, and entry-point overwrites
 - Bounded x86 structured exception dispatch through guest `FS:[0]` chains, including
   continue-execution and continue-search dispositions with synthetic records/contexts
+- Deterministic guest-thread execution with isolated registers, 64 KiB stacks and
+  TEB/SEH state, shared guest memory, and a 100-instruction round-robin quantum
 - Explicit batch YARA scanning of captured artifacts and confirmation-gated raw export
 - Explainable findings derived from observed behavior
 

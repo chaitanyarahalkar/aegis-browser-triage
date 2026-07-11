@@ -6,6 +6,8 @@ fn main() {
         analysis_dynamic::fixture::runtime_artifact_pe32()
     } else if std::env::args().any(|argument| argument == "--seh") {
         analysis_dynamic::fixture::seh_pe32()
+    } else if std::env::args().any(|argument| argument == "--threads") {
+        analysis_dynamic::fixture::threads_pe32()
     } else {
         analysis_dynamic::fixture::safe_dynamic_pe32()
     };
