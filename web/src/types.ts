@@ -91,6 +91,119 @@ export interface AnalysisReport {
 
 export type ProgressStage = 'loading-engine' | 'parsing' | 'finalizing'
 
+export type DynamicProgressStage = 'loading-engine' | 'loading-image' | 'executing' | 'finalizing'
+
+export interface DynamicInstructionEvent {
+  index: number
+  address: number
+  bytes: string
+  text: string
+}
+
+export interface DynamicApiEvent {
+  index: number
+  instruction: number
+  module: string
+  name: string
+  arguments: string[]
+  result: number
+  summary: string
+}
+
+export interface DynamicFileEvent {
+  operation: string
+  path: string
+  size: number | null
+  preview: string | null
+}
+
+export interface DynamicRegistryEvent {
+  operation: string
+  key: string
+  value: string | null
+}
+
+export interface DynamicNetworkEvent {
+  operation: string
+  destination: string
+  size: number | null
+  preview: string | null
+  synthetic_result: string
+}
+
+export interface DynamicMemoryEvent {
+  operation: string
+  address: number
+  size: number
+  permissions: string
+}
+
+export interface DynamicProcessEvent {
+  operation: string
+  command: string
+  synthetic_result: string
+}
+
+export interface DynamicFinding {
+  id: string
+  title: string
+  severity: Severity
+  rationale: string
+  evidence: string[]
+}
+
+export type DynamicTermination =
+  | { reason: 'exit_process'; code: number }
+  | { reason: 'returned_from_entry_point' }
+  | { reason: 'instruction_limit' }
+  | { reason: 'halted' }
+  | { reason: 'unsupported_instruction'; address: number; instruction: string }
+  | { reason: 'invalid_instruction'; address: number }
+  | { reason: 'memory_fault'; address: number; operation: string }
+
+export interface DynamicReport {
+  schema_version: number
+  engine_version: string
+  sample_sha256: string
+  profile: {
+    architecture: string
+    operating_system: string
+    image_base: number
+    entry_point: number
+    instruction_limit: number
+    trace_limit: number
+    network_mode: string
+  }
+  termination: DynamicTermination
+  instruction_count: number
+  elapsed_ms: number
+  virtual_time_ms: number
+  instructions: DynamicInstructionEvent[]
+  api_calls: DynamicApiEvent[]
+  processes: DynamicProcessEvent[]
+  filesystem: DynamicFileEvent[]
+  registry: DynamicRegistryEvent[]
+  network: DynamicNetworkEvent[]
+  memory: DynamicMemoryEvent[]
+  findings: DynamicFinding[]
+  warnings: string[]
+  truncated: boolean
+}
+
+export type DynamicWorkerRequest = {
+  type: 'analyze-dynamic'
+  jobId: string
+  name: string
+  buffer: ArrayBuffer
+  options: string
+}
+
+export type DynamicWorkerResponse =
+  | { type: 'progress'; jobId: string; stage: DynamicProgressStage }
+  | { type: 'completed'; jobId: string; report: DynamicReport }
+  | { type: 'failed'; jobId: string; message: string }
+  | { type: 'ready' }
+
 export type WorkerRequest =
   | { type: 'analyze'; jobId: string; name: string; buffer: ArrayBuffer; options: string }
   | { type: 'read-hex'; requestId: string; offset: number; length: number }
@@ -102,4 +215,3 @@ export type WorkerResponse =
   | { type: 'failed'; jobId: string; message: string }
   | { type: 'hex-slice'; requestId: string; offset: number; buffer: ArrayBuffer }
   | { type: 'ready'; maxInputBytes: number }
-

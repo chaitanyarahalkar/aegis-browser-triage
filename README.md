@@ -1,22 +1,37 @@
 # Aegis
 
-Aegis is a local-only static binary triage workbench. Its Rust analysis engine
-parses PE, ELF, Mach-O, and WebAssembly samples inside a dedicated browser Web
-Worker. Samples are treated as inert bytes: the application never instantiates,
-loads, or executes an uploaded binary.
+Aegis is a local-only binary triage workbench that runs in the browser. A Rust
+engine performs static inspection of PE, ELF, Mach-O, and WebAssembly files. A
+second Rust engine can emulate 32-bit x86 Windows PE samples inside a dedicated
+Web Worker.
 
-## What it reports
+Samples are never uploaded or executed by the host. Dynamic analysis uses an
+interpreter, an in-memory PE loader, and synthetic Windows APIs. Files, registry
+keys, processes, memory mappings, time, and network activity exist only as
+modeled events in the worker.
+
+## Capabilities
+
+Static reports include:
 
 - SHA-256, SHA-1, and MD5 identifiers
-- Format, architecture, entry-point, mitigation, and linkage metadata
+- Format, architecture, entry point, mitigations, and linkage metadata
 - Sections, permissions, offsets, sizes, and byte entropy
-- Imports, exports, printable strings, and non-clickable indicators
-- Explainable findings with severity, confidence, rationale, and evidence
-- Paged hex data and an explicit JSON report export
+- Imports, exports, bounded strings, and non-clickable indicators
+- Explainable findings and a paged hex view
 
-The current version performs static triage only. It does not provide a clean or
-malicious verdict, unpack archives, disassemble instructions, run YARA rules, or
-execute samples.
+Dynamic reports currently include:
+
+- PE32/x86 image loading, import resolution, stack, and guest memory
+- Bounded instruction traces and termination reasons
+- Modeled Windows API calls and deterministic virtual time
+- Synthetic process, filesystem, registry, network, and memory events
+- Explainable findings derived from observed behavior
+
+This is a triage tool, not a clean or malicious verdict. The interpreter
+supports a useful subset of x86 and Windows APIs; unsupported instructions,
+malformed memory access, timeouts, and instruction limits stop safely and are
+reported.
 
 ## Development
 
@@ -27,16 +42,18 @@ Requirements:
 - Node.js 22 or newer
 
 ```sh
-cargo test --workspace
+cargo test --workspace --all-features
 cd web
 npm install
+npm test
 npm run build
-npm run preview
+npm run test:e2e
 ```
 
-Open <http://127.0.0.1:4173>. `npm run dev` builds the Rust engine and starts a
-development server. `npm run test:e2e` runs the production workflow in desktop
-and mobile Chromium after the production bundle has been built.
+Open <http://127.0.0.1:4173> after `npm run preview`. `npm run dev` builds both
+Rust engines and starts the development server. Browser tests cover desktop and
+mobile Chromium, dynamic API behavior, instruction and memory limits, CSP,
+storage, malformed input, export, and a static performance budget.
 
 On Homebrew systems where `rustup` is keg-only, prepend its shim directory for
 Wasm builds:
@@ -47,13 +64,14 @@ PATH="$(brew --prefix rustup)/bin:$PATH" npm run build
 
 ## Repository structure
 
-- `crates/analysis-core`: deterministic, platform-neutral analysis and report schema
-- `crates/analysis-wasm`: narrow `wasm-bindgen` adapter
-- `web`: React UI, transferable worker protocol, production CSP, and browser tests
-- `docs/security-model.md`: guarantees, trust boundaries, limits, and non-goals
+- `crates/analysis-core`: platform-neutral static analysis and report schema
+- `crates/analysis-wasm`: static `wasm-bindgen` adapter
+- `crates/analysis-dynamic`: bounded PE32 loader, x86 interpreter, and virtual APIs
+- `crates/analysis-dynamic-wasm`: dynamic `wasm-bindgen` adapter
+- `web`: React UI, separate workers, production CSP, fixtures, and browser tests
+- `docs/security-model.md`: trust boundaries, limits, guarantees, and non-goals
 
-The production app has no telemetry, third-party assets, remote reputation
-lookups, or automatic persistence. See the security model before analyzing
-hostile samples.
+The production app has no telemetry, third-party assets, reputation lookups, or
+automatic persistence. See the security model before analyzing hostile samples.
 
 Licensed under MIT.

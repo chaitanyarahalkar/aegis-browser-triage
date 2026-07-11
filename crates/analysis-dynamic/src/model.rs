@@ -1,0 +1,161 @@
+use serde::{Deserialize, Serialize};
+
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 1;
+pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
+pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
+pub const HARD_MAX_API_EVENTS: usize = 100_000;
+pub const HARD_MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicOptions {
+    #[serde(default = "default_max_instructions")]
+    pub max_instructions: u64,
+    #[serde(default = "default_max_trace_events")]
+    pub max_trace_events: usize,
+}
+
+const fn default_max_instructions() -> u64 {
+    1_000_000
+}
+
+const fn default_max_trace_events() -> usize {
+    2_000
+}
+
+impl Default for DynamicOptions {
+    fn default() -> Self {
+        Self {
+            max_instructions: default_max_instructions(),
+            max_trace_events: default_max_trace_events(),
+        }
+    }
+}
+
+impl DynamicOptions {
+    pub fn bounded(mut self) -> Self {
+        self.max_instructions = self.max_instructions.clamp(1, HARD_MAX_INSTRUCTIONS);
+        self.max_trace_events = self.max_trace_events.clamp(1, HARD_MAX_TRACE_EVENTS);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicReport {
+    pub schema_version: u32,
+    pub engine_version: String,
+    pub sample_sha256: String,
+    pub profile: ExecutionProfile,
+    pub termination: Termination,
+    pub instruction_count: u64,
+    pub elapsed_ms: f64,
+    pub virtual_time_ms: u64,
+    pub instructions: Vec<InstructionEvent>,
+    pub api_calls: Vec<ApiEvent>,
+    pub processes: Vec<ProcessEvent>,
+    pub filesystem: Vec<FileEvent>,
+    pub registry: Vec<RegistryEvent>,
+    pub network: Vec<NetworkEvent>,
+    pub memory: Vec<MemoryEvent>,
+    pub findings: Vec<DynamicFinding>,
+    pub warnings: Vec<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionProfile {
+    pub architecture: String,
+    pub operating_system: String,
+    pub image_base: u32,
+    pub entry_point: u32,
+    pub instruction_limit: u64,
+    pub trace_limit: usize,
+    pub network_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum Termination {
+    ExitProcess { code: u32 },
+    ReturnedFromEntryPoint,
+    InstructionLimit,
+    Halted,
+    UnsupportedInstruction { address: u32, instruction: String },
+    InvalidInstruction { address: u32 },
+    MemoryFault { address: u32, operation: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstructionEvent {
+    pub index: u64,
+    pub address: u32,
+    pub bytes: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiEvent {
+    pub index: u64,
+    pub instruction: u64,
+    pub module: String,
+    pub name: String,
+    pub arguments: Vec<String>,
+    pub result: u32,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessEvent {
+    pub operation: String,
+    pub command: String,
+    pub synthetic_result: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEvent {
+    pub operation: String,
+    pub path: String,
+    pub size: Option<u32>,
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryEvent {
+    pub operation: String,
+    pub key: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkEvent {
+    pub operation: String,
+    pub destination: String,
+    pub size: Option<u32>,
+    pub preview: Option<String>,
+    pub synthetic_result: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEvent {
+    pub operation: String,
+    pub address: u32,
+    pub size: u32,
+    pub permissions: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicFinding {
+    pub id: String,
+    pub title: String,
+    pub severity: DynamicSeverity,
+    pub rationale: String,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicSeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+}

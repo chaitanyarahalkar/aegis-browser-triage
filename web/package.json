@@ -1,10 +1,12 @@
 {
   "name": "aegis-browser-triage",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "wasm": "wasm-pack build ../crates/analysis-wasm --target web --out-dir ../../web/src/generated/analysis-wasm --out-name analyzer",
+    "wasm:static": "wasm-pack build ../crates/analysis-wasm --target web --out-dir ../../web/src/generated/analysis-wasm --out-name analyzer",
+    "wasm:dynamic": "wasm-pack build ../crates/analysis-dynamic-wasm --target web --out-dir ../../web/src/generated/analysis-dynamic-wasm --out-name dynamic_analyzer",
+    "wasm": "npm run wasm:static && npm run wasm:dynamic",
     "dev": "npm run wasm && vite --host 127.0.0.1",
     "build": "npm run wasm && tsc -b && vite build",
     "test": "vitest run",

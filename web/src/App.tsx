@@ -1,30 +1,66 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnalysisClient } from './analysisClient'
+import { DynamicAnalysisClient } from './dynamicClient'
 import { formatBytes, formatLabel, formatMetadata, formatOffset, severityCounts } from './reportUtils'
-import type { AnalysisReport, ExtractedString, ProgressStage, Severity, SymbolRecord } from './types'
+import type {
+  AnalysisReport,
+  DynamicProgressStage,
+  DynamicReport,
+  DynamicTermination,
+  ExtractedString,
+  ProgressStage,
+  SymbolRecord,
+} from './types'
 
 const MAX_INPUT_BYTES = 128 * 1024 * 1024
 const PAGE_SIZE = 100
 type AppStatus = 'idle' | 'reading' | 'analyzing' | 'done' | 'error'
-type Tab = 'overview' | 'structure' | 'symbols' | 'strings' | 'hex'
+type DynamicStatus = 'idle' | 'running' | 'done' | 'error'
+type Tab = 'summary' | 'structure' | 'symbols' | 'strings' | 'hex' | 'dynamic'
 
 const progressLabels: Record<ProgressStage, string> = {
-  'loading-engine': 'Loading isolated engine',
-  parsing: 'Parsing binary structures',
-  finalizing: 'Building explainable report',
+  'loading-engine': 'Loading analysis engine',
+  parsing: 'Parsing binary',
+  finalizing: 'Preparing report',
+}
+
+const dynamicProgressLabels: Record<DynamicProgressStage, string> = {
+  'loading-engine': 'Loading x86 interpreter',
+  'loading-image': 'Mapping PE image',
+  executing: 'Emulating instructions',
+  finalizing: 'Preparing behavior report',
 }
 
 export default function App() {
-  const client = useMemo(() => new AnalysisClient(), [])
+  const staticClient = useMemo(() => new AnalysisClient(), [])
+  const dynamicClient = useMemo(() => new DynamicAnalysisClient(), [])
   const inputRef = useRef<HTMLInputElement>(null)
+  const dynamicRun = useRef(0)
   const [status, setStatus] = useState<AppStatus>('idle')
   const [stage, setStage] = useState<ProgressStage>('loading-engine')
   const [report, setReport] = useState<AnalysisReport | null>(null)
+  const [currentFile, setCurrentFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
-  const [activeTab, setActiveTab] = useState<Tab>('overview')
+  const [activeTab, setActiveTab] = useState<Tab>('summary')
+  const [dynamicStatus, setDynamicStatus] = useState<DynamicStatus>('idle')
+  const [dynamicStage, setDynamicStage] = useState<DynamicProgressStage>('loading-engine')
+  const [dynamicReport, setDynamicReport] = useState<DynamicReport | null>(null)
+  const [dynamicError, setDynamicError] = useState<string | null>(null)
 
-  useEffect(() => () => client.close(), [client])
+  useEffect(() => () => {
+    staticClient.close()
+    dynamicClient.close()
+  }, [dynamicClient, staticClient])
+
+  const resetDynamic = useCallback(() => {
+    dynamicRun.current += 1
+    dynamicClient.close()
+    setDynamicStatus('idle')
+    setDynamicStage('loading-engine')
+    setDynamicReport(null)
+    setDynamicError(null)
+  }, [dynamicClient])
 
   const inspectFile = useCallback(async (file: File) => {
     if (file.size === 0) {
@@ -33,54 +69,83 @@ export default function App() {
       return
     }
     if (file.size > MAX_INPUT_BYTES) {
-      setError(`This sample is ${formatBytes(file.size)}. The hard safety limit is 128 MiB.`)
+      setError(`This file is ${formatBytes(file.size)}. The maximum is 128 MiB.`)
       setStatus('error')
       return
     }
 
+    resetDynamic()
+    setCurrentFile(file)
     setError(null)
     setReport(null)
-    setActiveTab('overview')
+    setActiveTab('summary')
     setStatus('reading')
     try {
       const buffer = await file.arrayBuffer()
       setStatus('analyzing')
       setStage('loading-engine')
-      const result = await client.analyze(file, buffer, (nextStage) => setStage(nextStage))
+      const result = await staticClient.analyze(file, buffer, setStage)
       setReport(result)
       setStatus('done')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Analysis failed unexpectedly.')
       setStatus('error')
     }
-  }, [client])
+  }, [resetDynamic, staticClient])
 
-  const analyzeDemo = useCallback(() => {
-    const encoder = new TextEncoder()
-    const sectionName = encoder.encode('meta')
-    const indicator = encoder.encode('https://example.test')
-    const payload = new Uint8Array(1 + sectionName.length + 1 + indicator.length)
-    payload[0] = sectionName.length
-    payload.set(sectionName, 1)
-    payload.set(indicator, 2 + sectionName.length)
-    const bytes = new Uint8Array(8 + 2 + payload.length)
-    bytes.set([0, 97, 115, 109, 1, 0, 0, 0], 0)
-    bytes.set([0, payload.length], 8)
-    bytes.set(payload, 10)
-    void inspectFile(new File([bytes], 'safe-demo.wasm', { type: 'application/wasm' }))
+  const analyzeDemo = useCallback(async () => {
+    try {
+      const response = await fetch('/fixtures/aegis-safe-dynamic-pe32.exe')
+      if (!response.ok) throw new Error('Safe fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], 'aegis-safe-dynamic-pe32.exe', { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Safe fixture could not be loaded')
+      setStatus('error')
+    }
   }, [inspectFile])
 
+  const runDynamicAnalysis = useCallback(async () => {
+    if (!currentFile) return
+    const run = ++dynamicRun.current
+    setDynamicStatus('running')
+    setDynamicError(null)
+    setDynamicReport(null)
+    setDynamicStage('loading-engine')
+    try {
+      const buffer = await currentFile.arrayBuffer()
+      const result = await dynamicClient.analyze(currentFile, buffer, setDynamicStage)
+      if (dynamicRun.current !== run) return
+      setDynamicReport(result)
+      setDynamicStatus('done')
+    } catch (cause) {
+      if (dynamicRun.current !== run) return
+      setDynamicError(cause instanceof Error ? cause.message : 'Dynamic analysis failed unexpectedly.')
+      setDynamicStatus('error')
+    }
+  }, [currentFile, dynamicClient])
+
+  const cancelDynamic = () => {
+    dynamicRun.current += 1
+    dynamicClient.cancel()
+    setDynamicStatus('idle')
+    setDynamicError(null)
+  }
+
   const closeSample = () => {
-    client.close()
+    staticClient.close()
+    resetDynamic()
+    setCurrentFile(null)
     setReport(null)
     setError(null)
     setStatus('idle')
-    setActiveTab('overview')
+    setActiveTab('summary')
   }
 
   const exportReport = () => {
     if (!report) return
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
+    const payload = dynamicReport ? { static: report, dynamic: dynamicReport } : { static: report }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     const baseName = report.sample.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'sample'
@@ -94,319 +159,355 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#top" aria-label="Aegis home">
-          <span className="brand-mark"><ShieldIcon /></span>
-          <span>
-            <strong>AEGIS</strong>
-            <small>LOCAL BINARY TRIAGE</small>
-          </span>
+      <header className="app-header">
+        <a className="wordmark" href="#top" aria-label="Aegis home">
+          <span>A</span>
+          <strong>Aegis</strong>
         </a>
-        <div className="topbar-status" aria-label="Privacy status">
-          <span className="pulse-dot" />
-          <span>Network isolated</span>
-          <span className="status-divider" />
-          <span>Rust / Wasm</span>
+        <div className="header-meta">
+          <span className="quiet-status"><i /> Local only</span>
+          <span>Static + dynamic analysis</span>
         </div>
       </header>
 
-      <main id="top">
-        <section className="hero">
-          <div className="hero-grid" aria-hidden="true" />
-          <div className="eyebrow"><span>01</span> STATIC ANALYSIS WORKBENCH</div>
-          <h1>Inspect suspicious binaries.<br /><em>Keep them contained.</em></h1>
-          <p className="hero-copy">
-            Parse PE, ELF, Mach-O, and WebAssembly samples entirely inside your browser.
-            No uploads, no execution, no telemetry.
-          </p>
-
-          <div
-            className={`drop-zone ${dragging ? 'is-dragging' : ''} ${busy ? 'is-busy' : ''}`}
-            onDragEnter={(event) => { event.preventDefault(); setDragging(true) }}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false) }}
-            onDrop={(event) => {
-              event.preventDefault()
-              setDragging(false)
-              const file = event.dataTransfer.files[0]
-              if (file) void inspectFile(file)
-            }}
-          >
-            {busy ? (
-              <AnalysisProgress status={status} stage={stage} onCancel={closeSample} />
-            ) : (
-              <>
-                <div className="drop-icon"><ScanIcon /></div>
-                <div className="drop-copy">
-                  <strong>Drop a binary to begin</strong>
-                  <span>or select a file from this device · 128 MiB maximum</span>
-                </div>
-                <div className="drop-actions">
-                  <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>
-                    <UploadIcon /> Select binary
-                  </button>
-                  <button className="button ghost" type="button" onClick={analyzeDemo}>Try safe demo</button>
-                </div>
-              </>
-            )}
-            <input
-              ref={inputRef}
-              data-testid="file-input"
-              type="file"
-              hidden
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) void inspectFile(file)
-                event.currentTarget.value = ''
-              }}
+      <main id="top" className="page">
+        {!report && !busy && (
+          <section className="intro">
+            <div className="intro-copy">
+              <p className="kicker">Browser-native binary analysis</p>
+              <h1>Analyze binaries locally.</h1>
+              <p>Static inspection and bounded x86 emulation. Files stay in this browser and are never executed by the host.</p>
+            </div>
+            <UploadPanel
+              dragging={dragging}
+              setDragging={setDragging}
+              inputRef={inputRef}
+              inspectFile={inspectFile}
+              analyzeDemo={analyzeDemo}
             />
-          </div>
-
-          <div className="trust-row">
-            <TrustItem icon={<LockIcon />} title="In-memory only" text="Sample bytes disappear when closed" />
-            <TrustItem icon={<NoNetworkIcon />} title="No external access" text="A strict CSP blocks third-party requests" />
-            <TrustItem icon={<CpuIcon />} title="Never executed" text="Every upload is treated as inert data" />
-          </div>
-        </section>
-
-        {status === 'error' && error && (
-          <section className="error-banner" role="alert">
-            <div><AlertIcon /></div>
-            <span><strong>Analysis stopped safely</strong>{error}</span>
-            <button type="button" onClick={closeSample} aria-label="Dismiss error">×</button>
+            <div className="privacy-row">
+              <span>No uploads</span>
+              <span>No external network</span>
+              <span>Ephemeral memory</span>
+              <span>128 MiB limit</span>
+            </div>
           </section>
         )}
 
+        {busy && <StaticProgress status={status} stage={stage} onCancel={closeSample} />}
+
+        {status === 'error' && error && (
+          <div className="notice error-notice" role="alert">
+            <div><strong>Analysis stopped</strong><span>{error}</span></div>
+            <button type="button" onClick={closeSample}>Dismiss</button>
+          </div>
+        )}
+
         {report && status === 'done' && (
-          <ReportWorkspace
+          <Workspace
             report={report}
-            client={client}
+            dynamicReport={dynamicReport}
+            dynamicStatus={dynamicStatus}
+            dynamicStage={dynamicStage}
+            dynamicError={dynamicError}
+            staticClient={staticClient}
             activeTab={activeTab}
             onTabChange={setActiveTab}
             onClose={closeSample}
             onExport={exportReport}
+            onRunDynamic={runDynamicAnalysis}
+            onCancelDynamic={cancelDynamic}
           />
-        )}
-
-        {!report && !busy && (
-          <section className="capabilities" aria-label="Analysis capabilities">
-            <div className="section-heading">
-              <span>WHAT AEGIS READS</span>
-              <h2>Fast triage, explainable evidence.</h2>
-            </div>
-            <div className="capability-grid">
-              <Capability number="01" title="Binary structure" text="Headers, sections, permissions, entry points, architectures, and format-specific metadata." />
-              <Capability number="02" title="Linkage surface" text="Imported libraries, functions, exported symbols, dynamic paths, and runtime dependencies." />
-              <Capability number="03" title="Suspicious signals" text="Entropy, executable-writeable regions, embedded URLs, IPs, commands, and structural anomalies." />
-              <Capability number="04" title="Identifiable evidence" text="SHA-256, SHA-1, MD5 identifiers, file offsets, bounded strings, and portable JSON reports." />
-            </div>
-          </section>
         )}
       </main>
 
-      <footer>
-        <span>AEGIS 0.1</span>
-        <span>Static signals are not a malware verdict.</span>
-        <span>Built with Rust + WebAssembly</span>
+      <footer className="app-footer">
+        <span>Aegis 0.2</span>
+        <span>Static and emulated behavior are evidence, not a verdict.</span>
       </footer>
     </div>
   )
 }
 
-function AnalysisProgress({ status, stage, onCancel }: { status: AppStatus; stage: ProgressStage; onCancel: () => void }) {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo }: {
+  dragging: boolean
+  setDragging: (value: boolean) => void
+  inputRef: React.RefObject<HTMLInputElement | null>
+  inspectFile: (file: File) => Promise<void>
+  analyzeDemo: () => Promise<void>
+}) {
   return (
-    <div className="analysis-progress" role="status" aria-live="polite">
-      <div className="scanner"><span /></div>
-      <div>
-        <strong>{status === 'reading' ? 'Reading sample locally' : progressLabels[stage]}</strong>
-        <span>The interface remains isolated while Rust inspects the file.</span>
+    <div
+      className={`upload-panel ${dragging ? 'dragging' : ''}`}
+      onDragEnter={(event) => { event.preventDefault(); setDragging(true) }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false) }}
+      onDrop={(event) => {
+        event.preventDefault()
+        setDragging(false)
+        const file = event.dataTransfer.files[0]
+        if (file) void inspectFile(file)
+      }}
+    >
+      <div className="upload-copy">
+        <strong>Drop a binary here</strong>
+        <span>PE, ELF, Mach-O, or WebAssembly</span>
       </div>
-      <button className="button ghost compact" type="button" onClick={onCancel}>Cancel</button>
+      <div className="button-row">
+        <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
+        <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
+      </div>
+      <input
+        ref={inputRef}
+        data-testid="file-input"
+        type="file"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) void inspectFile(file)
+          event.currentTarget.value = ''
+        }}
+      />
     </div>
   )
 }
 
-function TrustItem({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
-  return <div className="trust-item"><span>{icon}</span><div><strong>{title}</strong><small>{text}</small></div></div>
+function StaticProgress({ status, stage, onCancel }: { status: AppStatus; stage: ProgressStage; onCancel: () => void }) {
+  return (
+    <section className="center-card" role="status" aria-live="polite">
+      <Spinner />
+      <h2>{status === 'reading' ? 'Reading file' : progressLabels[stage]}</h2>
+      <p>The analysis runs in an isolated worker.</p>
+      <button className="text-button" type="button" onClick={onCancel}>Cancel</button>
+    </section>
+  )
 }
 
-function Capability({ number, title, text }: { number: string; title: string; text: string }) {
-  return <article className="capability-card"><span>{number}</span><h3>{title}</h3><p>{text}</p></article>
-}
-
-function ReportWorkspace({ report, client, activeTab, onTabChange, onClose, onExport }: {
+function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamicError, staticClient, activeTab, onTabChange, onClose, onExport, onRunDynamic, onCancelDynamic }: {
   report: AnalysisReport
-  client: AnalysisClient
+  dynamicReport: DynamicReport | null
+  dynamicStatus: DynamicStatus
+  dynamicStage: DynamicProgressStage
+  dynamicError: string | null
+  staticClient: AnalysisClient
   activeTab: Tab
   onTabChange: (tab: Tab) => void
   onClose: () => void
   onExport: () => void
+  onRunDynamic: () => void
+  onCancelDynamic: () => void
 }) {
   const tabs: Array<{ id: Tab; label: string; count?: number }> = [
-    { id: 'overview', label: 'Overview', count: report.findings.length },
+    { id: 'summary', label: 'Summary', count: report.findings.length },
     { id: 'structure', label: 'Structure', count: report.sections.length },
-    { id: 'symbols', label: 'Imports / Exports', count: report.imports.length + report.exports.length },
-    { id: 'strings', label: 'Strings / IOCs', count: report.strings.length },
-    { id: 'hex', label: 'Hex view' },
+    { id: 'symbols', label: 'Symbols', count: report.imports.length + report.exports.length },
+    { id: 'strings', label: 'Strings', count: report.strings.length },
+    { id: 'hex', label: 'Hex' },
+    { id: 'dynamic', label: 'Dynamic', count: dynamicReport?.api_calls.length },
   ]
   return (
     <section className="workspace" aria-label="Analysis report">
-      <div className="sample-bar">
-        <div className="file-badge"><FileIcon /></div>
-        <div className="sample-identity">
-          <span className="format-chip">{formatLabel(report.sample.detected_format)}</span>
-          <strong title={report.sample.name}>{report.sample.name}</strong>
-          <small>{formatBytes(report.sample.size)} · {report.sample.architecture ?? 'Architecture unavailable'}</small>
+      <header className="sample-header">
+        <div className="sample-mark">{formatLabel(report.sample.detected_format).slice(0, 2)}</div>
+        <div className="sample-title">
+          <strong>{report.sample.name}</strong>
+          <span>{formatLabel(report.sample.detected_format)} · {report.sample.architecture ?? 'Unknown architecture'} · {formatBytes(report.sample.size)}</span>
         </div>
         <div className="sample-actions">
-          <button className="button ghost compact" type="button" onClick={onExport}><DownloadIcon /> Export JSON</button>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close sample">×</button>
+          <button className="button secondary compact" type="button" onClick={onExport}>Export report</button>
+          <button className="button secondary compact" type="button" onClick={onClose}>Close</button>
         </div>
-      </div>
+      </header>
 
-      <div className="tabs" role="tablist" aria-label="Report sections">
+      <nav className="tabs" role="tablist" aria-label="Report sections">
         {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            className={activeTab === tab.id ? 'active' : ''}
-            onClick={() => onTabChange(tab.id)}
-          >
-            {tab.label}{tab.count != null && <span>{tab.count.toLocaleString()}</span>}
+          <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => onTabChange(tab.id)}>
+            {tab.label}{tab.count != null && <span>{tab.count}</span>}
           </button>
         ))}
-      </div>
+      </nav>
 
       <div className="workspace-content" role="tabpanel">
-        {activeTab === 'overview' && <Overview report={report} />}
+        {activeTab === 'summary' && <SummaryView report={report} />}
         {activeTab === 'structure' && <StructureView report={report} />}
         {activeTab === 'symbols' && <SymbolsView report={report} />}
         {activeTab === 'strings' && <StringsView report={report} />}
-        {activeTab === 'hex' && <HexView client={client} sampleSize={report.sample.size} />}
+        {activeTab === 'hex' && <HexView client={staticClient} sampleSize={report.sample.size} />}
+        {activeTab === 'dynamic' && (
+          <DynamicView
+            staticReport={report}
+            report={dynamicReport}
+            status={dynamicStatus}
+            stage={dynamicStage}
+            error={dynamicError}
+            onRun={onRunDynamic}
+            onCancel={onCancelDynamic}
+          />
+        )}
       </div>
     </section>
   )
 }
 
-function Overview({ report }: { report: AnalysisReport }) {
+function SummaryView({ report }: { report: AnalysisReport }) {
   const counts = severityCounts(report)
   const metadata = formatMetadata(report)
   return (
-    <div className="overview-layout">
-      <div className="overview-main">
-        <div className="metric-grid">
-          <Metric label="Format" value={formatLabel(report.sample.detected_format)} detail={`Schema v${report.schema_version}`} />
-          <Metric label="Static signals" value={String(report.findings.length - counts.info)} detail={`${counts.high} high · ${counts.medium} medium`} />
-          <Metric label="Analysis time" value={`${report.stats.elapsed_ms.toFixed(report.stats.elapsed_ms < 10 ? 2 : 1)} ms`} detail={`${formatBytes(report.stats.bytes_scanned)} scanned`} />
+    <div className="two-column">
+      <div className="main-column">
+        <div className="stats-grid">
+          <Stat label="Format" value={formatLabel(report.sample.detected_format)} detail={`Schema v${report.schema_version}`} />
+          <Stat label="Signals" value={String(report.findings.length - counts.info)} detail={`${counts.high} high, ${counts.medium} medium`} />
+          <Stat label="Analysis" value={`${report.stats.elapsed_ms.toFixed(report.stats.elapsed_ms < 10 ? 2 : 1)} ms`} detail={`${formatBytes(report.stats.bytes_scanned)} scanned`} />
         </div>
-
-        {report.warnings.length > 0 && (
-          <div className="warning-list">
-            {report.warnings.map((warning, index) => <div key={`${warning.code}-${index}`}><AlertIcon /><span><strong>{warning.code}</strong>{warning.message}</span></div>)}
-          </div>
-        )}
-
-        <Panel title="Explainable findings" subtitle="Signals are ordered by severity and backed by file evidence.">
+        {report.warnings.length > 0 && <div className="notice warning-notice">{report.warnings.map((warning, index) => <span key={`${warning.code}-${index}`}>{warning.message}</span>)}</div>}
+        <Section title="Findings" description="Explainable static signals ordered by severity.">
           <div className="finding-list">
             {report.findings.map((finding, index) => (
-              <article className={`finding severity-${finding.severity}`} key={`${finding.id}-${index}`}>
-                <div className="finding-level"><span>{finding.severity}</span><small>{finding.confidence} confidence</small></div>
-                <div className="finding-body">
-                  <h4>{finding.title}</h4>
-                  <p>{finding.rationale}</p>
-                  {finding.evidence.length > 0 && <div className="evidence-row">{finding.evidence.map((evidence, evidenceIndex) => <code key={evidenceIndex}>{evidence.offset != null && `${formatOffset(evidence.offset)} · `}{evidence.value}</code>)}</div>}
-                </div>
+              <article className="finding" key={`${finding.id}-${index}`}>
+                <Severity value={finding.severity} />
+                <div><h3>{finding.title}</h3><p>{finding.rationale}</p>{finding.evidence.length > 0 && <div className="evidence">{finding.evidence.map((item, itemIndex) => <code key={itemIndex}>{item.offset != null && `${formatOffset(item.offset)} · `}{item.value}</code>)}</div>}</div>
               </article>
             ))}
           </div>
-        </Panel>
+        </Section>
       </div>
-
-      <aside className="overview-side">
-        <Panel title="Cryptographic identifiers" subtitle="SHA-1 and MD5 are shown for ecosystem matching only.">
+      <aside className="side-column">
+        <Section title="Hashes" description="SHA-1 and MD5 are identifiers only.">
           <Hash label="SHA-256" value={report.sample.sha256} />
           <Hash label="SHA-1" value={report.sample.sha1} />
           <Hash label="MD5" value={report.sample.md5} />
-        </Panel>
-        <Panel title="Format metadata" subtitle={`${metadata.length} parsed properties`}>
-          <dl className="metadata-list">
-            {metadata.map(([label, value]) => <div key={label}><dt>{label}</dt><dd title={value}>{value}</dd></div>)}
-          </dl>
-        </Panel>
-        <div className="safety-note"><LockIcon /><div><strong>Sample remained local</strong><span>No bytes were persisted or transmitted.</span></div></div>
+        </Section>
+        <Section title="Metadata">
+          <dl className="metadata-list">{metadata.map(([label, value]) => <div key={label}><dt>{label}</dt><dd title={value}>{value}</dd></div>)}</dl>
+        </Section>
       </aside>
     </div>
   )
 }
 
-function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return <div className="metric"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>
+function DynamicView({ staticReport, report, status, stage, error, onRun, onCancel }: {
+  staticReport: AnalysisReport
+  report: DynamicReport | null
+  status: DynamicStatus
+  stage: DynamicProgressStage
+  error: string | null
+  onRun: () => void
+  onCancel: () => void
+}) {
+  const format = staticReport.format as Record<string, unknown>
+  const eligible = format.kind === 'pe' && format.bitness === 32
+  const [view, setView] = useState<'behavior' | 'api' | 'instructions'>('behavior')
+
+  if (!eligible) {
+    return <EmptyState title="Dynamic analysis is not available for this file" text="The current emulator supports PE32/x86 executables. Static analysis remains available for every supported format." />
+  }
+  if (status === 'running') {
+    return <div className="dynamic-start"><Spinner /><h2>{dynamicProgressLabels[stage]}</h2><p>Execution is isolated inside a dedicated worker with a 10-second watchdog.</p><button className="button secondary" type="button" onClick={onCancel}>Stop analysis</button></div>
+  }
+  if (status === 'error' && error) {
+    return <div className="dynamic-start"><h2>Dynamic analysis stopped</h2><p>{error}</p><button className="button primary" type="button" onClick={onRun}>Try again</button></div>
+  }
+  if (!report) {
+    return (
+      <div className="dynamic-intro">
+        <div>
+          <p className="kicker">PE32 / x86 interpreter</p>
+          <h2>Observe modeled behavior</h2>
+          <p>Instructions run in a deterministic Rust interpreter. Windows APIs, files, registry keys, memory, and network operations are synthetic and never map to browser resources.</p>
+          <button className="button primary" type="button" onClick={onRun}>Run dynamic analysis</button>
+        </div>
+        <dl className="limits-list">
+          <div><dt>Instruction limit</dt><dd>1,000,000</dd></div>
+          <div><dt>Wall-time limit</dt><dd>10 seconds</dd></div>
+          <div><dt>Guest memory</dt><dd>256 MiB maximum</dd></div>
+          <div><dt>Network</dt><dd>Synthetic sink</dd></div>
+        </dl>
+      </div>
+    )
+  }
+
+  const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length
+  return (
+    <div className="dynamic-report">
+      <div className="stats-grid four">
+        <Stat label="Termination" value={terminationLabel(report.termination)} detail="Bounded execution" />
+        <Stat label="Instructions" value={report.instruction_count.toLocaleString()} detail={`${report.instructions.length.toLocaleString()} traced`} />
+        <Stat label="API calls" value={report.api_calls.length.toLocaleString()} detail={`${behaviorCount} behavior event${behaviorCount === 1 ? '' : 's'}`} />
+        <Stat label="Elapsed" value={`${report.elapsed_ms.toFixed(2)} ms`} detail="Dedicated worker" />
+      </div>
+      <div className="notice safe-notice"><strong>No guest operation left the browser.</strong><span>Network, filesystem, registry, time, process, and memory APIs were modeled locally.</span></div>
+      <Section title="Dynamic findings" description="Signals derived from observed execution.">
+        <div className="finding-list">
+          {report.findings.map((finding) => <article className="finding" key={finding.id}><Severity value={finding.severity} /><div><h3>{finding.title}</h3><p>{finding.rationale}</p>{finding.evidence.length > 0 && <div className="evidence">{finding.evidence.map((value) => <code key={value}>{value}</code>)}</div>}</div></article>)}
+        </div>
+      </Section>
+      {report.warnings.length > 0 && <div className="notice warning-notice">{report.warnings.map((warning) => <span key={warning}>{warning}</span>)}</div>}
+      <div className="subtabs">
+        <button className={view === 'behavior' ? 'active' : ''} type="button" onClick={() => setView('behavior')}>Behavior ({behaviorCount})</button>
+        <button className={view === 'api' ? 'active' : ''} type="button" onClick={() => setView('api')}>API calls ({report.api_calls.length})</button>
+        <button className={view === 'instructions' ? 'active' : ''} type="button" onClick={() => setView('instructions')}>Instructions ({report.instructions.length})</button>
+      </div>
+      {view === 'behavior' && <BehaviorView report={report} />}
+      {view === 'api' && <ApiView report={report} />}
+      {view === 'instructions' && <InstructionView report={report} />}
+    </div>
+  )
 }
 
-function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
-  return <section className="panel"><header><div><h3>{title}</h3>{subtitle && <p>{subtitle}</p>}</div></header><div className="panel-body">{children}</div></section>
+function BehaviorView({ report }: { report: DynamicReport }) {
+  const rows = [
+    ...report.processes.map((event) => ({ type: 'Process', operation: event.operation, target: event.command, detail: event.synthetic_result })),
+    ...report.network.map((event) => ({ type: 'Network', operation: event.operation, target: event.destination, detail: event.synthetic_result })),
+    ...report.filesystem.map((event) => ({ type: 'File', operation: event.operation, target: event.path, detail: event.preview ?? 'Virtual filesystem' })),
+    ...report.registry.map((event) => ({ type: 'Registry', operation: event.operation, target: event.key, detail: event.value ?? 'Synthetic registry' })),
+    ...report.memory.map((event) => ({ type: 'Memory', operation: event.operation, target: formatOffset(event.address), detail: `${formatBytes(event.size)} · ${event.permissions}` })),
+  ]
+  if (rows.length === 0) return <EmptyState title="No high-level behavior events" text="The sample did not reach the currently modeled APIs." />
+  return <Table><thead><tr><th>Type</th><th>Operation</th><th>Target</th><th>Result</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.type}-${index}`}><td><span className="tag">{row.type}</span></td><td>{row.operation}</td><td><code>{row.target}</code></td><td>{row.detail}</td></tr>)}</tbody></Table>
 }
 
-function Hash({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false)
-  return <div className="hash-row"><span>{label}</span><code title={value}>{value}</code><button type="button" onClick={() => { void navigator.clipboard.writeText(value); setCopied(true); window.setTimeout(() => setCopied(false), 1200) }}>{copied ? 'Copied' : 'Copy'}</button></div>
+function ApiView({ report }: { report: DynamicReport }) {
+  if (report.api_calls.length === 0) return <EmptyState title="No API calls recorded" text="Execution ended before reaching a modeled import." />
+  return <Table><thead><tr><th>#</th><th>API</th><th>Instruction</th><th>Summary</th><th>Result</th></tr></thead><tbody>{report.api_calls.map((event) => <tr key={event.index}><td>{event.index + 1}</td><td><code className="strong-code">{event.module}!{event.name}</code></td><td>{event.instruction.toLocaleString()}</td><td>{event.summary}</td><td><code>{formatOffset(event.result)}</code></td></tr>)}</tbody></Table>
+}
+
+function InstructionView({ report }: { report: DynamicReport }) {
+  return <Table><thead><tr><th>#</th><th>Address</th><th>Bytes</th><th>Instruction</th></tr></thead><tbody>{report.instructions.map((event) => <tr key={event.index}><td>{event.index}</td><td><code>{formatOffset(event.address)}</code></td><td><code>{event.bytes}</code></td><td><code className="strong-code">{event.text}</code></td></tr>)}</tbody></Table>
 }
 
 function StructureView({ report }: { report: AnalysisReport }) {
-  return (
-    <Panel title="Sections and regions" subtitle={`${report.sections.length.toLocaleString()} bounded records · entropy measured in bits per byte`}>
-      {report.sections.length === 0 ? <EmptyState title="No section table available" text="This format did not expose section records in the current analysis view." /> : (
-        <div className="table-scroll"><table><thead><tr><th>Name</th><th>File offset</th><th>Virtual address</th><th>Size</th><th>Permissions</th><th>Entropy</th></tr></thead><tbody>
-          {report.sections.map((section, index) => <tr key={`${section.name}-${index}`}><td><code className="strong-code">{section.name}</code></td><td><code>{formatOffset(section.offset)}</code></td><td><code>{formatOffset(section.virtual_address)}</code></td><td>{formatBytes(section.size)}</td><td><span className={`permission ${section.permissions.includes('w') && section.permissions.includes('x') ? 'danger' : ''}`}>{section.permissions}</span></td><td><div className="entropy"><span><i style={{ width: `${section.entropy / 8 * 100}%` }} /></span><code>{section.entropy.toFixed(2)}</code></div></td></tr>)}
-        </tbody></table></div>
-      )}
-    </Panel>
-  )
+  if (report.sections.length === 0) return <EmptyState title="No sections available" text="This format did not expose section records." />
+  return <Section title="Sections" description={`${report.sections.length.toLocaleString()} bounded records. Entropy is measured in bits per byte.`}><Table><thead><tr><th>Name</th><th>File offset</th><th>Virtual address</th><th>Size</th><th>Permissions</th><th>Entropy</th></tr></thead><tbody>{report.sections.map((section, index) => <tr key={`${section.name}-${index}`}><td><code className="strong-code">{section.name}</code></td><td><code>{formatOffset(section.offset)}</code></td><td><code>{formatOffset(section.virtual_address)}</code></td><td>{formatBytes(section.size)}</td><td><span className={`permission ${section.permissions.includes('w') && section.permissions.includes('x') ? 'danger' : ''}`}>{section.permissions}</span></td><td><div className="entropy"><span><i style={{ width: `${section.entropy / 8 * 100}%` }} /></span><code>{section.entropy.toFixed(2)}</code></div></td></tr>)}</tbody></Table></Section>
 }
 
 function SymbolsView({ report }: { report: AnalysisReport }) {
   const [mode, setMode] = useState<'imports' | 'exports'>('imports')
-  const records = mode === 'imports' ? report.imports : report.exports
-  return (
-    <Panel title="Linked symbols" subtitle="Names and addresses are parsed without resolving or loading any dependency.">
-      <div className="segmented"><button type="button" className={mode === 'imports' ? 'active' : ''} onClick={() => setMode('imports')}>Imports <span>{report.imports.length}</span></button><button type="button" className={mode === 'exports' ? 'active' : ''} onClick={() => setMode('exports')}>Exports <span>{report.exports.length}</span></button></div>
-      <SymbolTable records={records} />
-    </Panel>
-  )
+  return <Section title="Symbols" description="Parsed without loading any dependency."><div className="subtabs"><button type="button" className={mode === 'imports' ? 'active' : ''} onClick={() => setMode('imports')}>Imports ({report.imports.length})</button><button type="button" className={mode === 'exports' ? 'active' : ''} onClick={() => setMode('exports')}>Exports ({report.exports.length})</button></div><SymbolTable records={mode === 'imports' ? report.imports : report.exports} /></Section>
 }
 
 function SymbolTable({ records }: { records: SymbolRecord[] }) {
   const [page, setPage] = useState(0)
   useEffect(() => setPage(0), [records])
   const pages = Math.max(1, Math.ceil(records.length / PAGE_SIZE))
-  const visible = records.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
   if (records.length === 0) return <EmptyState title="No symbols found" text="The binary does not expose symbols of this kind." />
-  return <><div className="table-scroll"><table><thead><tr><th>Symbol</th><th>Module</th><th>Kind</th><th>Address / index</th></tr></thead><tbody>{visible.map((record, index) => <tr key={`${record.name}-${index}`}><td><code className="strong-code">{record.name}</code></td><td>{record.module ?? '—'}</td><td><span className="kind-chip">{record.kind}</span></td><td><code>{formatOffset(record.address)}</code></td></tr>)}</tbody></table></div><Pagination page={page} pages={pages} count={records.length} onPage={setPage} /></>
+  return <><Table><thead><tr><th>Symbol</th><th>Module</th><th>Kind</th><th>Address / index</th></tr></thead><tbody>{records.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((record, index) => <tr key={`${record.name}-${index}`}><td><code className="strong-code">{record.name}</code></td><td>{record.module ?? '—'}</td><td><span className="tag">{record.kind}</span></td><td><code>{formatOffset(record.address)}</code></td></tr>)}</tbody></Table><Pagination page={page} pages={pages} count={records.length} onPage={setPage} /></>
 }
 
 function StringsView({ report }: { report: AnalysisReport }) {
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<'strings' | 'indicators'>('strings')
   const [page, setPage] = useState(0)
-  const strings = useMemo(() => report.strings.filter((item) => item.value.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, report.strings])
-  const indicators = useMemo(() => report.indicators.filter((item) => `${item.kind} ${item.value}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [query, report.indicators])
+  const strings = useMemo(() => report.strings.filter((item) => item.value.toLowerCase().includes(query.toLowerCase())), [query, report.strings])
+  const indicators = useMemo(() => report.indicators.filter((item) => `${item.kind} ${item.value}`.toLowerCase().includes(query.toLowerCase())), [query, report.indicators])
   const records = mode === 'strings' ? strings : indicators
   const pages = Math.max(1, Math.ceil(records.length / PAGE_SIZE))
   useEffect(() => setPage(0), [mode, query])
-  return (
-    <Panel title="Strings and indicators" subtitle="Bounded extraction with offsets; values are deliberately rendered as non-clickable text.">
-      <div className="table-tools"><div className="segmented"><button type="button" className={mode === 'strings' ? 'active' : ''} onClick={() => setMode('strings')}>Strings <span>{report.strings.length}</span></button><button type="button" className={mode === 'indicators' ? 'active' : ''} onClick={() => setMode('indicators')}>Indicators <span>{report.indicators.length}</span></button></div><label className="search"><SearchIcon /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter extracted values" aria-label="Filter extracted values" /></label></div>
-      {records.length === 0 ? <EmptyState title="No matching values" text={query ? 'Try a broader filter.' : 'No values of this type were extracted.'} /> : (
-        <><div className="table-scroll"><table><thead><tr><th>Offset</th><th>{mode === 'strings' ? 'Encoding' : 'Type'}</th><th>Value</th></tr></thead><tbody>{records.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((record, index) => <StringRow key={`${record.offset}-${index}`} record={record as ExtractedString & { kind?: string }} />)}</tbody></table></div><Pagination page={page} pages={pages} count={records.length} onPage={setPage} /></>
-      )}
-    </Panel>
-  )
+  return <Section title="Strings and indicators" description="Values are bounded and deliberately non-clickable."><div className="table-tools"><div className="subtabs"><button type="button" className={mode === 'strings' ? 'active' : ''} onClick={() => setMode('strings')}>Strings ({report.strings.length})</button><button type="button" className={mode === 'indicators' ? 'active' : ''} onClick={() => setMode('indicators')}>Indicators ({report.indicators.length})</button></div><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter values" aria-label="Filter extracted values" /></div>{records.length === 0 ? <EmptyState title="No matching values" text={query ? 'Try a broader filter.' : 'No values of this type were extracted.'} /> : <><Table><thead><tr><th>Offset</th><th>{mode === 'strings' ? 'Encoding' : 'Type'}</th><th>Value</th></tr></thead><tbody>{records.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((record, index) => <StringRow key={`${record.offset}-${index}`} record={record as ExtractedString & { kind?: string }} />)}</tbody></Table><Pagination page={page} pages={pages} count={records.length} onPage={setPage} /></>}</Section>
 }
 
 function StringRow({ record }: { record: ExtractedString & { kind?: string } }) {
-  return <tr><td><code>{formatOffset(record.offset)}</code></td><td><span className="kind-chip">{record.kind ?? record.encoding}</span></td><td><code className="string-value">{record.value}</code></td></tr>
+  return <tr><td><code>{formatOffset(record.offset)}</code></td><td><span className="tag">{record.kind ?? record.encoding}</span></td><td><code className="string-value">{record.value}</code></td></tr>
 }
 
 function HexView({ client, sampleSize }: { client: AnalysisClient; sampleSize: number }) {
@@ -422,31 +523,52 @@ function HexView({ client, sampleSize }: { client: AnalysisClient; sampleSize: n
   }, [client, offset])
   const rows = []
   for (let index = 0; index < bytes.length; index += 16) rows.push(bytes.slice(index, index + 16))
-  return (
-    <Panel title="Paged hex view" subtitle="Only 512 bytes are copied from the isolated worker at a time.">
-      <div className="hex-toolbar"><button className="button ghost compact" type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>← Previous</button><code>{formatOffset(offset)} — {formatOffset(Math.min(offset + bytes.length, sampleSize))}</code><button className="button ghost compact" type="button" disabled={offset + pageSize >= sampleSize} onClick={() => setOffset(offset + pageSize)}>Next →</button></div>
-      {error ? <EmptyState title="Hex view unavailable" text={error} /> : <div className="hex-view">{rows.map((row, rowIndex) => <div className="hex-row" key={rowIndex}><span>{formatOffset(offset + rowIndex * 16)}</span><code>{Array.from(row).map((byte) => byte.toString(16).padStart(2, '0')).join(' ').padEnd(47, ' ')}</code><code>{Array.from(row).map((byte) => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '.').join('')}</code></div>)}</div>}
-    </Panel>
-  )
+  if (error) return <EmptyState title="Hex view unavailable" text={error} />
+  return <Section title="Hex view" description="Only 512 bytes are copied from the static worker at a time."><div className="hex-toolbar"><button className="button secondary compact" type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</button><code>{formatOffset(offset)} – {formatOffset(Math.min(offset + bytes.length, sampleSize))}</code><button className="button secondary compact" type="button" disabled={offset + pageSize >= sampleSize} onClick={() => setOffset(offset + pageSize)}>Next</button></div><div className="hex-view">{rows.map((row, rowIndex) => <div className="hex-row" key={rowIndex}><span>{formatOffset(offset + rowIndex * 16)}</span><code>{Array.from(row).map((byte) => byte.toString(16).padStart(2, '0')).join(' ').padEnd(47, ' ')}</code><code>{Array.from(row).map((byte) => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '.').join('')}</code></div>)}</div></Section>
+}
+
+function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+  return <section className="section-card"><header><h2>{title}</h2>{description && <p>{description}</p>}</header><div>{children}</div></section>
+}
+
+function Table({ children }: { children: React.ReactNode }) {
+  return <div className="table-scroll"><table>{children}</table></div>
+}
+
+function Stat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="stat"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>
+}
+
+function Severity({ value }: { value: string }) {
+  return <span className={`severity severity-${value}`}>{value}</span>
+}
+
+function Hash({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false)
+  return <div className="hash-row"><span>{label}</span><code title={value}>{value}</code><button type="button" onClick={() => { void navigator.clipboard.writeText(value); setCopied(true); window.setTimeout(() => setCopied(false), 1200) }}>{copied ? 'Copied' : 'Copy'}</button></div>
 }
 
 function Pagination({ page, pages, count, onPage }: { page: number; pages: number; count: number; onPage: (page: number) => void }) {
   if (pages <= 1) return null
-  return <div className="pagination"><span>{count.toLocaleString()} records · page {page + 1} of {pages}</span><div><button type="button" disabled={page === 0} onClick={() => onPage(page - 1)}>←</button><button type="button" disabled={page + 1 >= pages} onClick={() => onPage(page + 1)}>→</button></div></div>
+  return <div className="pagination"><span>{count.toLocaleString()} records · page {page + 1} of {pages}</span><div><button type="button" disabled={page === 0} onClick={() => onPage(page - 1)}>Previous</button><button type="button" disabled={page + 1 >= pages} onClick={() => onPage(page + 1)}>Next</button></div></div>
 }
 
 function EmptyState({ title, text }: { title: string; text: string }) {
-  return <div className="empty-state"><ScanIcon /><strong>{title}</strong><span>{text}</span></div>
+  return <div className="empty-state"><strong>{title}</strong><span>{text}</span></div>
 }
 
-const icon = (path: React.ReactNode) => <svg viewBox="0 0 24 24" aria-hidden="true">{path}</svg>
-function ShieldIcon() { return icon(<><path d="M12 2 20 5v6c0 5-3.3 9.3-8 11-4.7-1.7-8-6-8-11V5l8-3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></>) }
-function ScanIcon() { return icon(<><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 12h8M12 8v8"/></>) }
-function UploadIcon() { return icon(<><path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 15v4h14v-4"/></>) }
-function LockIcon() { return icon(<><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></>) }
-function NoNetworkIcon() { return icon(<><path d="M5 12.5a10 10 0 0 1 14 0M8 16a6 6 0 0 1 8 0M11 19a2 2 0 0 1 2 0"/><path d="m4 4 16 16"/></>) }
-function CpuIcon() { return icon(<><rect x="7" y="7" width="10" height="10" rx="1"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4M10 10h4v4h-4z"/></>) }
-function AlertIcon() { return icon(<><path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 9v5M12 17h.01"/></>) }
-function FileIcon() { return icon(<><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5M9 12h6M9 16h6"/></>) }
-function DownloadIcon() { return icon(<><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 20h14"/></>) }
-function SearchIcon() { return icon(<><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></>) }
+function Spinner() {
+  return <span className="spinner" aria-hidden="true" />
+}
+
+function terminationLabel(termination: DynamicTermination): string {
+  switch (termination.reason) {
+    case 'exit_process': return `Exit ${termination.code}`
+    case 'returned_from_entry_point': return 'Returned'
+    case 'instruction_limit': return 'Limit reached'
+    case 'halted': return 'Halted'
+    case 'unsupported_instruction': return 'Unsupported instruction'
+    case 'invalid_instruction': return 'Invalid instruction'
+    case 'memory_fault': return 'Memory fault'
+  }
+}
