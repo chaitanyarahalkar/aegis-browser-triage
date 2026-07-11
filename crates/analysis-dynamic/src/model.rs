@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 2;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 3;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -58,10 +58,73 @@ pub struct DynamicReport {
     pub memory: Vec<MemoryEvent>,
     pub injection: Vec<InjectionEvent>,
     pub persistence: Vec<PersistenceEvent>,
+    pub artifacts: Vec<ArtifactSummary>,
+    pub artifact_stats: ArtifactStats,
     pub timeline: Vec<TimelineEvent>,
     pub coverage: ExecutionCoverage,
     pub findings: Vec<DynamicFinding>,
     pub warnings: Vec<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    Memory,
+    VirtualFile,
+    RemoteMemory,
+    Configuration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactSummary {
+    pub id: String,
+    pub kind: ArtifactKind,
+    pub name: String,
+    pub size: u64,
+    pub captured_size: u64,
+    pub sha256: String,
+    pub entropy: f64,
+    pub detected_format: String,
+    pub trigger: String,
+    pub address: Option<u32>,
+    pub path: Option<String>,
+    pub permissions: Option<String>,
+    pub strings: Vec<ArtifactString>,
+    pub indicators: Vec<ArtifactIndicator>,
+    pub origins: Vec<ArtifactOrigin>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactOrigin {
+    pub api: String,
+    pub instruction: u64,
+    pub virtual_time_ms: u64,
+    pub timeline_sequence: Option<u64>,
+    pub trigger: String,
+    pub address: Option<u32>,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactString {
+    pub offset: u64,
+    pub encoding: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactIndicator {
+    pub kind: String,
+    pub value: String,
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactStats {
+    pub count: usize,
+    pub retained_bytes: u64,
     pub truncated: bool,
 }
 

@@ -33,6 +33,9 @@ Dynamic reports currently include:
 - Ordered behavior timeline and execution/API coverage metrics
 - Correlated process-injection primitives such as remote allocation, writes,
   protection changes, remote threads, and APCs
+- Bounded runtime artifact capture from interesting memory, virtual files, and
+  synthetic remote memory, with hashes, entropy, strings, indicators, and origins
+- Explicit batch YARA scanning of captured artifacts and confirmation-gated raw export
 - Explainable findings derived from observed behavior
 
 YARA analysis includes:
@@ -41,6 +44,7 @@ YARA analysis includes:
 - Ephemeral `.yar` / `.yara` import and local rule export
 - Structured compiler diagnostics, severity metadata, tags, and match offsets
 - Links from occurrences to the bounded hex viewer
+- Batch scans of explicitly selected runtime artifacts using the current editor rules
 - PE, ELF, Mach-O, .NET, hash, math, string, and time modules
 
 This is a triage tool, not a clean or malicious verdict. The interpreter
@@ -68,7 +72,8 @@ npm run test:e2e
 Open <http://127.0.0.1:4173> after `npm run preview`. `npm run dev` builds all
 Rust engines and starts the development server. Browser tests cover desktop and
 mobile Chromium, dynamic API behavior, YARA compilation and matches, instruction
-and memory limits, CSP, storage, malformed input, export, and a static performance budget.
+and memory limits, runtime artifact capture and YARA, CSP, storage, malformed input,
+export, and a static performance budget.
 
 On Homebrew systems where `rustup` is keg-only, prepend its shim directory for
 Wasm builds:

@@ -34,6 +34,8 @@ struct Region {
     start: u32,
     data: Vec<u8>,
     permissions: Permissions,
+    name: String,
+    dirty: bool,
 }
 
 impl Region {
@@ -61,7 +63,7 @@ impl Memory {
         start: u32,
         size: usize,
         permissions: Permissions,
-        _name: impl Into<String>,
+        name: impl Into<String>,
     ) -> Result<(), DynamicError> {
         if size == 0 || self.allocated.saturating_add(size) > crate::HARD_MAX_MEMORY_BYTES {
             return Err(DynamicError::MemoryLimit);
@@ -81,6 +83,8 @@ impl Memory {
             start,
             data: vec![0; size],
             permissions,
+            name: name.into(),
+            dirty: false,
         });
         self.regions.sort_by_key(|region| region.start);
         Ok(())
@@ -127,6 +131,9 @@ impl Memory {
             .ok_or(DynamicError::MemoryWrite { address })?;
         let offset = (address - region.start) as usize;
         region.data[offset..offset + data.len()].copy_from_slice(data);
+        if !force && !data.is_empty() {
+            region.dirty = true;
+        }
         Ok(())
     }
 
@@ -207,4 +214,39 @@ impl Memory {
         self.allocated = self.allocated.saturating_sub(region.data.len());
         true
     }
+
+    pub fn snapshot(&self, address: u32) -> Option<MemoryRegionView<'_>> {
+        self.regions
+            .iter()
+            .find(|region| address >= region.start && address < region.end())
+            .map(|region| MemoryRegionView {
+                start: region.start,
+                name: &region.name,
+                permissions: region.permissions,
+                dirty: region.dirty,
+                data: &region.data,
+            })
+    }
+
+    pub fn dirty_regions(&self) -> impl Iterator<Item = MemoryRegionView<'_>> {
+        self.regions
+            .iter()
+            .filter(|region| region.dirty)
+            .map(|region| MemoryRegionView {
+                start: region.start,
+                name: &region.name,
+                permissions: region.permissions,
+                dirty: true,
+                data: &region.data,
+            })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct MemoryRegionView<'a> {
+    pub start: u32,
+    pub name: &'a str,
+    pub permissions: Permissions,
+    pub dirty: bool,
+    pub data: &'a [u8],
 }

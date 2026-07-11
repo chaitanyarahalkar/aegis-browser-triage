@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 
 const safePe = readFileSync(new URL('../public/fixtures/aegis-safe-dynamic-pe32.exe', import.meta.url))
+const artifactPe = readFileSync(new URL('../public/fixtures/aegis-safe-runtime-artifact-pe32.exe', import.meta.url))
 const safeMacos = readFileSync(new URL('../../fixtures/aegis-safe-sample-macos', import.meta.url))
 
 async function loadSafeDemo(page: import('@playwright/test').Page) {
@@ -51,7 +52,7 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v2', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v3', { exact: true })).toBeVisible()
 })
 
 test('bounds an infinite loop by instruction count', async ({ page, isMobile }) => {
@@ -125,7 +126,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(2)
+  expect(json.dynamic.schema_version).toBe(3)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
@@ -143,6 +144,40 @@ test('shows structured YARA diagnostics without taking down static analysis', as
   await expect(page.getByRole('alert')).toContainText('syntax error')
   await page.getByRole('tab', { name: /^Summary/ }).click()
   await expect(page.getByRole('heading', { name: 'Findings' })).toBeVisible()
+})
+
+test('captures runtime artifacts, scans them with YARA, and gates raw export', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop artifact inspection workflow')
+  await page.goto('/')
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'aegis-safe-runtime-artifact-pe32.exe',
+    mimeType: 'application/octet-stream',
+    buffer: artifactPe,
+  })
+  await expect(page.getByText('aegis-safe-runtime-artifact-pe32.exe')).toBeVisible()
+  await runDynamic(page)
+  await page.getByRole('button', { name: /^Artifacts/ }).click()
+  await expect(page.locator('.artifact-strings')).toContainText('AEGIS_SAFE_RUNTIME_ARTIFACT')
+  await page.getByRole('button', { name: 'Scan artifacts with YARA' }).click()
+  await expect(page.getByText('Aegis_Safe_Runtime_Artifact', { exact: true }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: 'Export raw bytes' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Export potentially malicious bytes?' })
+  await expect(dialog).toBeVisible()
+  const downloadPromise = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Export raw bytes' }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toMatch(/\.bin$/)
+  const bytes = readFileSync(await download.path()!)
+  expect(bytes.subarray(0, 2).toString()).toBe('MZ')
+
+  const reportPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export report' }).click()
+  const reportDownload = await reportPromise
+  const json = JSON.parse(readFileSync(await reportDownload.path()!, 'utf8'))
+  expect(json.dynamic.artifacts.length).toBeGreaterThanOrEqual(2)
+  expect(json.dynamic.artifact_yara.some((result: { report?: { matches: Array<{ identifier: string }> } }) => result.report?.matches.some((match) => match.identifier === 'Aegis_Safe_Runtime_Artifact'))).toBe(true)
+  expect(json.dynamic.artifacts.every((artifact: Record<string, unknown>) => !('bytes' in artifact) && !('data' in artifact))).toBe(true)
 })
 
 test('does not contact third parties or persist sample data', async ({ page }) => {

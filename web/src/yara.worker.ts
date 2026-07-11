@@ -39,6 +39,17 @@ scope.onmessage = async (event: MessageEvent<YaraWorkerRequest>) => {
     }
     if (!compiled) throw new Error('Compile the rule pack before scanning.')
     post({ type: 'yara-progress', jobId: request.jobId, stage: 'scanning' })
+    if (request.type === 'scan-yara-artifacts') {
+      const results = request.artifacts.map((artifact) => {
+        try {
+          return { artifact_id: artifact.id, report: JSON.parse(compiled!.scan(artifact.name, new Uint8Array(artifact.buffer), request.options)), error: null }
+        } catch (error) {
+          return { artifact_id: artifact.id, report: null, error: messageFrom(error) }
+        }
+      })
+      post({ type: 'yara-artifacts-completed', jobId: request.jobId, results })
+      return
+    }
     const report = JSON.parse(compiled.scan(request.name, new Uint8Array(request.buffer), request.options))
     post({ type: 'yara-completed', jobId: request.jobId, report })
   } catch (error) {

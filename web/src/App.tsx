@@ -6,6 +6,7 @@ import starterRules from './rules/aegis-starter.yar?raw'
 import { formatBytes, formatLabel, formatMetadata, formatOffset, severityCounts } from './reportUtils'
 import type {
   AnalysisReport,
+  ArtifactYaraResult,
   DynamicProgressStage,
   DynamicReport,
   DynamicTermination,
@@ -62,6 +63,9 @@ export default function App() {
   const [yaraReport, setYaraReport] = useState<YaraReport | null>(null)
   const [yaraError, setYaraError] = useState<string | null>(null)
   const [hexTarget, setHexTarget] = useState<number | null>(null)
+  const [artifactYara, setArtifactYara] = useState<ArtifactYaraResult[]>([])
+  const [artifactYaraStatus, setArtifactYaraStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [artifactYaraError, setArtifactYaraError] = useState<string | null>(null)
 
   useEffect(() => {
     staticClient.warmup()
@@ -79,6 +83,9 @@ export default function App() {
     setDynamicStage('loading-engine')
     setDynamicReport(null)
     setDynamicError(null)
+    setArtifactYara([])
+    setArtifactYaraStatus('idle')
+    setArtifactYaraError(null)
   }, [dynamicClient])
 
   const inspectFile = useCallback(async (file: File) => {
@@ -95,6 +102,9 @@ export default function App() {
 
     resetDynamic()
     setYaraReport(null)
+    setArtifactYara([])
+    setArtifactYaraStatus('idle')
+    setArtifactYaraError(null)
     setCurrentFile(file)
     setError(null)
     setReport(null)
@@ -150,6 +160,9 @@ export default function App() {
     setDynamicError(null)
     setDynamicReport(null)
     setDynamicStage('loading-engine')
+    setArtifactYara([])
+    setArtifactYaraStatus('idle')
+    setArtifactYaraError(null)
     try {
       const buffer = await currentFile.arrayBuffer()
       const result = await dynamicClient.analyze(currentFile, buffer, setDynamicStage)
@@ -162,6 +175,23 @@ export default function App() {
       setDynamicStatus('error')
     }
   }, [currentFile, dynamicClient])
+
+  const scanDynamicArtifacts = useCallback(async () => {
+    if (!dynamicReport?.artifacts.length) return
+    setArtifactYaraStatus('running'); setArtifactYaraError(null); setArtifactYara([])
+    try {
+      await yaraClient.compile(yaraSource, yaraSourceName, 'Analyst rules', setYaraStage)
+      const artifacts = await Promise.all(dynamicReport.artifacts.map(async (artifact) => {
+        const result = await dynamicClient.readArtifact(artifact.id)
+        return { id: artifact.id, name: artifact.name, buffer: result.bytes.buffer }
+      }))
+      const results = await yaraClient.scanArtifacts(artifacts, setYaraStage)
+      setArtifactYara(results); setArtifactYaraStatus('done')
+    } catch (cause) {
+      setArtifactYaraError(cause instanceof Error ? cause.message : 'Artifact YARA scan failed')
+      setArtifactYaraStatus('error')
+    }
+  }, [dynamicClient, dynamicReport, yaraClient, yaraSource, yaraSourceName])
 
   const cancelDynamic = () => {
     dynamicRun.current += 1
@@ -182,7 +212,7 @@ export default function App() {
 
   const exportReport = () => {
     if (!report) return
-    const payload = { static: report, ...(dynamicReport ? { dynamic: dynamicReport } : {}), ...(yaraReport ? { yara: yaraReport } : {}) }
+    const payload = { static: report, ...(dynamicReport ? { dynamic: { ...dynamicReport, ...(artifactYara.length ? { artifact_yara: artifactYara } : {}) } } : {}), ...(yaraReport ? { yara: yaraReport } : {}) }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
@@ -257,6 +287,11 @@ export default function App() {
             onExport={exportReport}
             onRunDynamic={runDynamicAnalysis}
             onCancelDynamic={cancelDynamic}
+            dynamicClient={dynamicClient}
+            artifactYara={artifactYara}
+            artifactYaraStatus={artifactYaraStatus}
+            artifactYaraError={artifactYaraError}
+            onScanArtifacts={scanDynamicArtifacts}
             yaraSource={yaraSource}
             yaraSourceName={yaraSourceName}
             yaraStatus={yaraStatus}
@@ -334,13 +369,18 @@ function StaticProgress({ status, stage, onCancel }: { status: AppStatus; stage:
   )
 }
 
-function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamicError, staticClient, activeTab, onTabChange, onClose, onExport, onRunDynamic, onCancelDynamic, yaraSource, yaraSourceName, yaraStatus, yaraStage, yaraSummary, yaraReport, yaraError, onYaraSource, onRunYara, onYaraOffset, hexTarget }: {
+function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamicError, staticClient, dynamicClient, artifactYara, artifactYaraStatus, artifactYaraError, onScanArtifacts, activeTab, onTabChange, onClose, onExport, onRunDynamic, onCancelDynamic, yaraSource, yaraSourceName, yaraStatus, yaraStage, yaraSummary, yaraReport, yaraError, onYaraSource, onRunYara, onYaraOffset, hexTarget }: {
   report: AnalysisReport
   dynamicReport: DynamicReport | null
   dynamicStatus: DynamicStatus
   dynamicStage: DynamicProgressStage
   dynamicError: string | null
   staticClient: AnalysisClient
+  dynamicClient: DynamicAnalysisClient
+  artifactYara: ArtifactYaraResult[]
+  artifactYaraStatus: 'idle' | 'running' | 'done' | 'error'
+  artifactYaraError: string | null
+  onScanArtifacts: () => void
   activeTab: Tab
   onTabChange: (tab: Tab) => void
   onClose: () => void
@@ -405,6 +445,11 @@ function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamic
             error={dynamicError}
             onRun={onRunDynamic}
             onCancel={onCancelDynamic}
+            client={dynamicClient}
+            artifactYara={artifactYara}
+            artifactYaraStatus={artifactYaraStatus}
+            artifactYaraError={artifactYaraError}
+            onScanArtifacts={onScanArtifacts}
           />
         )}
         {activeTab === 'yara' && <YaraView source={yaraSource} sourceName={yaraSourceName} status={yaraStatus} stage={yaraStage} summary={yaraSummary} report={yaraReport} error={yaraError} onSource={onYaraSource} onRun={onRunYara} onOffset={onYaraOffset} />}
@@ -450,7 +495,7 @@ function SummaryView({ report }: { report: AnalysisReport }) {
   )
 }
 
-function DynamicView({ staticReport, report, status, stage, error, onRun, onCancel }: {
+function DynamicView({ staticReport, report, status, stage, error, onRun, onCancel, client, artifactYara, artifactYaraStatus, artifactYaraError, onScanArtifacts }: {
   staticReport: AnalysisReport
   report: DynamicReport | null
   status: DynamicStatus
@@ -458,10 +503,16 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
   error: string | null
   onRun: () => void
   onCancel: () => void
+  client: DynamicAnalysisClient
+  artifactYara: ArtifactYaraResult[]
+  artifactYaraStatus: 'idle' | 'running' | 'done' | 'error'
+  artifactYaraError: string | null
+  onScanArtifacts: () => void
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts'>('timeline')
+  const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
     return <EmptyState title="Dynamic analysis is not available for this file" text="The current emulator supports PE32/x86 executables. Static analysis remains available for every supported format." />
@@ -514,12 +565,14 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
         <button className={view === 'api' ? 'active' : ''} type="button" onClick={() => setView('api')}>API calls ({report.api_calls.length})</button>
         <button className={view === 'instructions' ? 'active' : ''} type="button" onClick={() => setView('instructions')}>Instructions ({report.instructions.length})</button>
         <button className={view === 'coverage' ? 'active' : ''} type="button" onClick={() => setView('coverage')}>Coverage</button>
+        <button className={view === 'artifacts' ? 'active' : ''} type="button" onClick={() => setView('artifacts')}>Artifacts ({report.artifacts.length})</button>
       </div>
-      {view === 'timeline' && <TimelineView report={report} />}
+      {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
       {view === 'behavior' && <BehaviorView report={report} />}
       {view === 'api' && <ApiView report={report} />}
       {view === 'instructions' && <InstructionView report={report} />}
       {view === 'coverage' && <CoverageView report={report} />}
+      {view === 'artifacts' && <ArtifactsView report={report} client={client} yara={artifactYara} status={artifactYaraStatus} error={artifactYaraError} onScan={onScanArtifacts} onTimeline={(sequence) => { setTimelineTarget(sequence); setView('timeline') }} />}
     </div>
   )
 }
@@ -528,12 +581,52 @@ function InjectionChain({ events }: { events: DynamicReport['injection'] }) {
   return <Section title="Process injection chain" description="Correlated remote operations against synthetic process address spaces."><div className="injection-chain">{events.map((event, index) => <article key={`${event.operation}-${index}`}><span>{index + 1}</span><div><strong>{event.operation.replaceAll('_', ' ')}</strong><code>process {formatOffset(event.process_handle)} · address {formatOffset(event.address)}</code><small>{formatBytes(event.size)}{event.preview ? ` · ${event.preview}` : ''}</small></div></article>)}</div></Section>
 }
 
-function TimelineView({ report }: { report: DynamicReport }) {
+function ArtifactsView({ report, client, yara, status, error, onScan, onTimeline }: { report: DynamicReport; client: DynamicAnalysisClient; yara: ArtifactYaraResult[]; status: 'idle' | 'running' | 'done' | 'error'; error: string | null; onScan: () => void; onTimeline: (sequence: number) => void }) {
+  const [kind, setKind] = useState('all')
+  const [selectedId, setSelectedId] = useState(report.artifacts[0]?.id ?? '')
+  const [offset, setOffset] = useState(0)
+  const [bytes, setBytes] = useState<Uint8Array<ArrayBuffer>>(new Uint8Array(new ArrayBuffer(0)))
+  const [readError, setReadError] = useState<string | null>(null)
+  const [exportTarget, setExportTarget] = useState<string | null>(null)
+  const artifacts = kind === 'all' ? report.artifacts : report.artifacts.filter((artifact) => artifact.kind === kind)
+  const selected = report.artifacts.find((artifact) => artifact.id === selectedId) ?? artifacts[0]
+  useEffect(() => {
+    if (!selected) return
+    let alive = true; setReadError(null)
+    client.readArtifactSlice(selected.id, offset, 512).then((result) => { if (alive) setBytes(result.bytes) }).catch((cause) => { if (alive) setReadError(cause instanceof Error ? cause.message : 'Artifact read failed') })
+    return () => { alive = false }
+  }, [client, offset, selected])
+  const exportBytes = async () => {
+    if (!selected) return
+    const result = await client.readArtifact(selected.id)
+    const url = URL.createObjectURL(new Blob([result.bytes.buffer], { type: 'application/octet-stream' }))
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${selected.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'artifact'}.bin`; anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0); setExportTarget(null)
+  }
+  if (!report.artifacts.length) return <EmptyState title="No runtime artifacts captured" text="No written memory or virtual files met the bounded capture policy." />
+  const yaraFor = (id: string) => yara.find((result) => result.artifact_id === id)
+  return <div className="artifact-layout">
+    <div className="artifact-actions"><div className="timeline-filters">{['all', 'memory', 'virtual_file', 'remote_memory', 'configuration'].map((value) => <button type="button" className={kind === value ? 'active' : ''} key={value} onClick={() => setKind(value)}>{value.replaceAll('_', ' ')}</button>)}</div><button className="button primary compact" type="button" disabled={status === 'running'} onClick={onScan}>{status === 'running' ? 'Scanning artifacts…' : 'Scan artifacts with YARA'}</button></div>
+    {error && <div className="notice error-notice yara-error" role="alert"><div><strong>Artifact YARA stopped</strong><span>{error}</span></div></div>}
+    <div className="artifact-grid"><Section title="Captured artifacts" description={`${report.artifact_stats.count} unique artifacts · ${formatBytes(report.artifact_stats.retained_bytes)} retained in the worker.`}><Table><thead><tr><th>Name</th><th>Kind</th><th>Format</th><th>Size</th><th>Entropy</th><th>YARA</th></tr></thead><tbody>{artifacts.map((artifact) => { const result = yaraFor(artifact.id); return <tr className={selected?.id === artifact.id ? 'selected-row' : ''} key={artifact.id} onClick={() => { setSelectedId(artifact.id); setOffset(0) }}><td><code className="strong-code">{artifact.name}</code></td><td><span className="tag">{artifact.kind}</span></td><td>{artifact.detected_format}</td><td>{formatBytes(artifact.captured_size)}</td><td>{artifact.entropy.toFixed(2)}</td><td>{result?.error ? 'Error' : result ? `${result.report?.matches.length ?? 0} matches` : 'Not scanned'}</td></tr> })}</tbody></Table></Section>
+      {selected && <Section title={selected.name} description={`${selected.sha256.slice(0, 20)}… · ${selected.trigger}`}><div className="artifact-detail"><dl className="limits-list"><div><dt>Kind</dt><dd>{selected.kind}</dd></div><div><dt>Format</dt><dd>{selected.detected_format}</dd></div><div><dt>Permissions</dt><dd>{selected.permissions ?? '—'}</dd></div><div><dt>Captured</dt><dd>{formatBytes(selected.captured_size)}</dd></div></dl><div className="button-row"><button className="button secondary compact" type="button" onClick={() => setExportTarget(selected.id)}>Export raw bytes</button>{selected.origins[0]?.timeline_sequence != null && <button className="button secondary compact" type="button" onClick={() => onTimeline(selected.origins[0].timeline_sequence!)}>View timeline origin</button>}</div>{readError ? <div className="notice warning-notice">{readError}</div> : <ArtifactHex bytes={bytes} offset={offset} total={selected.captured_size} onOffset={setOffset} />}<h3>Strings and indicators</h3><div className="artifact-strings">{selected.indicators.map((indicator) => <code key={`${indicator.offset}-${indicator.value}`}>{indicator.kind}: {indicator.value}</code>)}{selected.strings.slice(0, 24).map((item) => <code key={`${item.offset}-${item.value}`}>{formatOffset(item.offset)} {item.value}</code>)}</div>{yaraFor(selected.id)?.report && <div className="notice safe-notice"><strong>{yaraFor(selected.id)!.report!.matches.length} YARA rule matches.</strong><span>{yaraFor(selected.id)!.report!.matches.map((match) => match.identifier).join(', ') || 'No rules matched.'}</span></div>}</div></Section>}
+    </div>
+    {exportTarget && selected && <div className="modal-backdrop" role="presentation"><div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="artifact-export-title"><h2 id="artifact-export-title">Export potentially malicious bytes?</h2><p><strong>{selected.name}</strong> may contain executable or harmful content. Aegis will download {formatBytes(selected.captured_size)} with SHA-256 <code>{selected.sha256}</code>.</p><div className="button-row"><button className="button secondary" type="button" onClick={() => setExportTarget(null)}>Cancel</button><button className="button primary" type="button" onClick={() => void exportBytes()}>Export raw bytes</button></div></div></div>}
+  </div>
+}
+
+function ArtifactHex({ bytes, offset, total, onOffset }: { bytes: Uint8Array<ArrayBuffer>; offset: number; total: number; onOffset: (offset: number) => void }) {
+  const rows = []
+  for (let index = 0; index < bytes.length; index += 16) rows.push(bytes.slice(index, index + 16))
+  return <div><div className="hex-toolbar"><button className="button secondary compact" type="button" disabled={offset === 0} onClick={() => onOffset(Math.max(0, offset - 512))}>Previous</button><code>{formatOffset(offset)} – {formatOffset(Math.min(total, offset + bytes.length))}</code><button className="button secondary compact" type="button" disabled={offset + 512 >= total} onClick={() => onOffset(offset + 512)}>Next</button></div><div className="hex-view artifact-hex">{rows.map((row, rowIndex) => <div className="hex-row" key={rowIndex}><span>{formatOffset(offset + rowIndex * 16)}</span><code>{Array.from(row).map((byte) => byte.toString(16).padStart(2, '0')).join(' ').padEnd(47, ' ')}</code><code>{Array.from(row).map((byte) => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '.').join('')}</code></div>)}</div></div>
+}
+
+function TimelineView({ report, target }: { report: DynamicReport; target: number | null }) {
   const [category, setCategory] = useState('all')
   const categories = ['all', ...Array.from(new Set(report.timeline.map((event) => event.category)))]
   const events = category === 'all' ? report.timeline : report.timeline.filter((event) => event.category === category)
   if (report.timeline.length === 0) return <EmptyState title="No timeline events" text="Execution ended before reaching a modeled or fallback API." />
-  return <Section title="Execution timeline" description="Ordered synthetic activity; virtual timestamps never use the host clock."><div className="timeline-filters">{categories.map((value) => <button type="button" className={category === value ? 'active' : ''} key={value} onClick={() => setCategory(value)}>{value.charAt(0).toUpperCase() + value.slice(1)}</button>)}</div><Table><thead><tr><th>#</th><th>Virtual time</th><th>Category</th><th>Operation</th><th>Subject</th><th>Source API</th><th>Instruction</th></tr></thead><tbody>{events.map((event) => <tr key={event.sequence}><td>{event.sequence + 1}</td><td>{event.virtual_time_ms.toLocaleString()} ms</td><td><span className="tag">{event.category}</span></td><td>{event.operation}</td><td><code>{event.subject}</code></td><td><code className="strong-code">{event.source_api}</code></td><td>{event.instruction.toLocaleString()}</td></tr>)}</tbody></Table></Section>
+  return <Section title="Execution timeline" description="Ordered synthetic activity; virtual timestamps never use the host clock."><div className="timeline-filters">{categories.map((value) => <button type="button" className={category === value ? 'active' : ''} key={value} onClick={() => setCategory(value)}>{value.charAt(0).toUpperCase() + value.slice(1)}</button>)}</div><Table><thead><tr><th>#</th><th>Virtual time</th><th>Category</th><th>Operation</th><th>Subject</th><th>Source API</th><th>Instruction</th></tr></thead><tbody>{events.map((event) => <tr className={target === event.sequence ? 'highlight-row' : ''} key={event.sequence}><td>{event.sequence + 1}</td><td>{event.virtual_time_ms.toLocaleString()} ms</td><td><span className="tag">{event.category}</span></td><td>{event.operation}</td><td><code>{event.subject}</code></td><td><code className="strong-code">{event.source_api}</code></td><td>{event.instruction.toLocaleString()}</td></tr>)}</tbody></Table></Section>
 }
 
 function CoverageView({ report }: { report: DynamicReport }) {

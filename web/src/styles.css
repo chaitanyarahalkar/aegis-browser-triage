@@ -144,6 +144,23 @@ code { font-family: var(--mono); }
 .injection-chain strong { text-transform: capitalize; font-size: 11px; }
 .injection-chain code, .injection-chain small { overflow: hidden; text-overflow: ellipsis; font-size: 9px; white-space: nowrap; }
 .injection-chain small { color: var(--muted); }
+.artifact-layout { display: grid; gap: 16px; }
+.artifact-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--border); border-radius: 8px; background: white; padding-right: 12px; }
+.artifact-actions .timeline-filters { border: 0; }
+.artifact-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, .8fr); gap: 14px; align-items: start; }
+.artifact-grid tbody tr { cursor: pointer; }
+.artifact-detail { display: grid; gap: 14px; }
+.artifact-detail > .limits-list { margin: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }
+.artifact-detail > .button-row, .artifact-detail > h3 { padding: 0 14px; margin: 0; }
+.artifact-strings { max-height: 220px; padding: 0 14px 14px; overflow: auto; display: grid; gap: 5px; }
+.artifact-strings code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 7px; background: var(--surface-muted); font-size: 9px; }
+.artifact-detail > .notice { margin: 0 14px 14px; }
+.artifact-hex { max-height: 265px; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 20; padding: 20px; display: grid; place-items: center; background: rgba(20,20,18,.52); }
+.confirm-dialog { width: min(520px, 100%); padding: 24px; border-radius: 10px; background: white; box-shadow: 0 20px 60px rgba(0,0,0,.24); }
+.confirm-dialog h2 { margin: 0 0 12px; font-size: 20px; }
+.confirm-dialog p { color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.confirm-dialog .button-row { justify-content: flex-end; margin-top: 18px; }
 
 .table-scroll { max-width: 100%; overflow: auto; }
 table { width: 100%; border-collapse: collapse; text-align: left; }
@@ -151,6 +168,7 @@ th { position: sticky; top: 0; z-index: 1; padding: 11px 14px; background: #f5f5
 td { max-width: 470px; padding: 12px 14px; border-bottom: 1px solid #ebebe7; color: #4c4c47; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: #fafaf8; }
+tbody tr.selected-row td, tbody tr.highlight-row td { background: #eef3ff; }
 td code, .strong-code { color: #292925; font: 10px/1.4 var(--mono); }
 .permission { display: inline-block; padding: 4px 6px; border-radius: 4px; background: #eef3ff; color: var(--accent); font: 700 9px/1 var(--mono); }
 .permission.danger { background: #fff0ef; color: var(--red); }
@@ -214,6 +232,8 @@ td code, .strong-code { color: #292925; font: 10px/1.4 var(--mono); }
   .table-tools input { width: auto; margin: 0 10px 10px; }
   .dynamic-start { margin: 20px auto; padding: 22px; }
   .dynamic-intro { grid-template-columns: 1fr; gap: 12px; }
+  .artifact-actions { align-items: stretch; flex-direction: column; padding: 0 10px 10px; }
+  .artifact-grid { grid-template-columns: 1fr; }
   .yara-toolbar, .yara-run { align-items: stretch; flex-direction: column; }
   .yara-toolbar > div { margin-left: 0; }
   .app-footer { padding: 18px; align-items: flex-start; flex-direction: column; }

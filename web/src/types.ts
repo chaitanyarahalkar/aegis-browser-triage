@@ -220,6 +220,8 @@ export interface DynamicReport {
   memory: DynamicMemoryEvent[]
   injection: DynamicInjectionEvent[]
   persistence: DynamicPersistenceEvent[]
+  artifacts: ArtifactSummary[]
+  artifact_stats: { count: number; retained_bytes: number; truncated: boolean }
   timeline: DynamicTimelineEvent[]
   coverage: DynamicCoverage
   findings: DynamicFinding[]
@@ -227,18 +229,22 @@ export interface DynamicReport {
   truncated: boolean
 }
 
-export type DynamicWorkerRequest = {
-  type: 'analyze-dynamic'
-  jobId: string
-  name: string
-  buffer: ArrayBuffer
-  options: string
+export type ArtifactKind = 'memory' | 'virtual_file' | 'remote_memory' | 'configuration'
+export interface ArtifactOrigin { api: string; instruction: number; virtual_time_ms: number; timeline_sequence: number | null; trigger: string; address: number | null; path: string | null }
+export interface ArtifactSummary {
+  id: string; kind: ArtifactKind; name: string; size: number; captured_size: number; sha256: string; entropy: number; detected_format: string; trigger: string; address: number | null; path: string | null; permissions: string | null; strings: Array<{ offset: number; encoding: string; value: string }>; indicators: Array<{ kind: string; value: string; offset: number }>; origins: ArtifactOrigin[]; truncated: boolean
 }
+
+export type DynamicWorkerRequest =
+  | { type: 'analyze-dynamic'; jobId: string; name: string; buffer: ArrayBuffer; options: string }
+  | { type: 'read-artifact'; requestId: string; artifactId: string; offset: number; length: number; full: boolean }
 
 export type DynamicWorkerResponse =
   | { type: 'progress'; jobId: string; stage: DynamicProgressStage }
   | { type: 'completed'; jobId: string; report: DynamicReport }
   | { type: 'failed'; jobId: string; message: string }
+  | { type: 'artifact-slice'; requestId: string; artifactId: string; offset: number; total: number; buffer: ArrayBuffer }
+  | { type: 'artifact-failed'; requestId: string; message: string }
   | { type: 'ready' }
 
 export type WorkerRequest =
@@ -271,12 +277,15 @@ export interface YaraReport {
   stats: { rules_scanned: number; matching_rules: number; matched_patterns: number; reported_occurrences: number }
   truncated: boolean
 }
+export interface ArtifactYaraResult { artifact_id: string; report: YaraReport | null; error: string | null }
 export type YaraWorkerRequest =
   | { type: 'compile-yara'; jobId: string; packName: string; sourceName: string; namespace: string; source: string }
   | { type: 'scan-yara'; jobId: string; name: string; buffer: ArrayBuffer; options: string }
+  | { type: 'scan-yara-artifacts'; jobId: string; artifacts: Array<{ id: string; name: string; buffer: ArrayBuffer }>; options: string }
   | { type: 'reset-yara' }
 export type YaraWorkerResponse =
   | { type: 'yara-progress'; jobId: string; stage: YaraProgressStage }
   | { type: 'yara-compiled'; jobId: string; summary: YaraCompileSummary }
   | { type: 'yara-completed'; jobId: string; report: YaraReport }
+  | { type: 'yara-artifacts-completed'; jobId: string; results: ArtifactYaraResult[] }
   | { type: 'yara-failed'; jobId: string; message: string }

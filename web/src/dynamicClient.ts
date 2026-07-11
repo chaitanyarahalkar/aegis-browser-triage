@@ -8,10 +8,12 @@ type PendingJob = {
   onProgress: (stage: DynamicProgressStage) => void
   timeout: number
 }
+type PendingArtifact = { resolve: (value: { bytes: Uint8Array<ArrayBuffer>; total: number }) => void; reject: (error: Error) => void; timeout: number }
 
 export class DynamicAnalysisClient {
   private worker: Worker | null = null
   private pending = new Map<string, PendingJob>()
+  private artifactReads = new Map<string, PendingArtifact>()
 
   analyze(
     file: File,
@@ -44,6 +46,24 @@ export class DynamicAnalysisClient {
     this.cancel('Dynamic sample closed')
   }
 
+  readArtifactSlice(artifactId: string, offset = 0, length = 64 * 1024): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
+    return this.requestArtifact(artifactId, offset, Math.min(length, 64 * 1024), false)
+  }
+
+  readArtifact(artifactId: string): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
+    return this.requestArtifact(artifactId, 0, 4 * 1024 * 1024, true)
+  }
+
+  private requestArtifact(artifactId: string, offset: number, length: number, full: boolean): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
+    const worker = this.ensureWorker()
+    const requestId = crypto.randomUUID()
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => { this.artifactReads.delete(requestId); reject(new Error('Artifact read timed out')) }, 5_000)
+      this.artifactReads.set(requestId, { resolve, reject, timeout })
+      worker.postMessage({ type: 'read-artifact', requestId, artifactId, offset, length, full })
+    })
+  }
+
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
     const worker = new Worker(new URL('./dynamic.worker.ts', import.meta.url), {
@@ -59,6 +79,15 @@ export class DynamicAnalysisClient {
 
   private handleMessage(message: DynamicWorkerResponse): void {
     if (message.type === 'ready') return
+    if (message.type === 'artifact-slice' || message.type === 'artifact-failed') {
+      const pending = this.artifactReads.get(message.requestId)
+      if (!pending) return
+      window.clearTimeout(pending.timeout)
+      this.artifactReads.delete(message.requestId)
+      if (message.type === 'artifact-slice') pending.resolve({ bytes: new Uint8Array(message.buffer), total: message.total })
+      else pending.reject(new Error(message.message))
+      return
+    }
     const pending = this.pending.get(message.jobId)
     if (!pending) return
     if (message.type === 'progress') {
@@ -77,8 +106,9 @@ export class DynamicAnalysisClient {
       pending.reject(error)
     }
     this.pending.clear()
+    for (const pending of this.artifactReads.values()) { window.clearTimeout(pending.timeout); pending.reject(error) }
+    this.artifactReads.clear()
     this.worker?.terminate()
     this.worker = null
   }
 }
-

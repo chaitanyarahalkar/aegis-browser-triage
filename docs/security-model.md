@@ -32,6 +32,9 @@ flowchart LR
   DW --> EMU["PE32 loader and x86 interpreter"]
   EMU --> VOS["Synthetic Windows APIs"]
   VOS --> REP["Behavior report"]
+  EMU --> ART["Ephemeral artifact store"]
+  ART -->|"explicit scan or confirmed export"| UI
+  ART -->|"explicit batch scan"| YW
   YW --> YX["YARA-X compiler and scanner"]
 ```
 
@@ -64,6 +67,10 @@ Dynamic analysis:
 - TLS callbacks execute under the same instruction, time, memory, and worker limits
 - Remote allocation, process writes, and thread creation are correlated as report
   events but never target or create a host process
+- Runtime artifact capture is limited to 128 unique artifacts, 4 MiB per artifact,
+  and 32 MiB total retained bytes; ordinary UI reads are capped at 64 KiB
+- Artifact bytes remain in the dynamic worker for the session. Reports contain only
+  bounded metadata, and raw-byte export requires a per-artifact confirmation
 - Unsupported instructions and invalid reads, writes, or execution become
   structured termination reasons
 
@@ -72,6 +79,8 @@ YARA analysis:
 - Explicit analyst initiation in a separate, lazy-loaded worker
 - 1 MiB rule-source and 128 MiB sample limits
 - 5-second compilation and 10-second scan watchdogs enforced by worker termination
+- Runtime artifact batch scans are explicit, limited to 128 artifacts and 32 MiB,
+  and use a 15-second watchdog
 - 10,000 compiled rules, 100 diagnostics, 5,000 matching rules, 10,000 reported
   occurrences, and 100 occurrences per pattern
 - Includes disabled; slow patterns and loops rejected at compile time
@@ -87,7 +96,7 @@ Application controls:
 - No telemetry, analytics, external fonts, remote reputation, or third-party assets
 - CSP limits scripts, workers, and connections to the same origin
 - No automatic localStorage, IndexedDB, OPFS, service-worker, or server persistence
-- No original sample bytes or custom YARA source in exported reports
+- No original sample bytes, runtime artifact bytes, or custom YARA source in exported reports
 
 `connect-src 'self'` permits workers to fetch same-origin analyzer Wasm and the
 bundled safe fixture. No guest network API maps to `fetch`, WebSocket, WebRTC, or

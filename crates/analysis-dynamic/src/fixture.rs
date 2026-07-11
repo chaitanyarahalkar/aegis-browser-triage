@@ -119,6 +119,147 @@ pub fn dynamic_resolution_pe32() -> Vec<u8> {
     bytes
 }
 
+pub fn runtime_artifact_pe32() -> Vec<u8> {
+    let mut bytes = safe_dynamic_pe32();
+    let payload = b"MZ AEGIS_SAFE_RUNTIME_ARTIFACT powershell https://artifact.example.test\0";
+    let code = [
+        0x6a,
+        0x04,
+        0x68,
+        0x00,
+        0x30,
+        0x00,
+        0x00,
+        0x68,
+        0x00,
+        0x10,
+        0x00,
+        0x00,
+        0x6a,
+        0x00,
+        0xff,
+        0x15,
+        0x60,
+        0x20,
+        0x40,
+        0x00, // VirtualAlloc
+        0x89,
+        0xc3, // mov ebx,eax
+        0x6a,
+        payload.len() as u8,
+        0x68,
+        0x20,
+        0x11,
+        0x40,
+        0x00,
+        0x53,
+        0xff,
+        0x15,
+        0x64,
+        0x20,
+        0x40,
+        0x00, // RtlMoveMemory
+        0x68,
+        0xe0,
+        0x11,
+        0x40,
+        0x00,
+        0x6a,
+        0x20,
+        0x6a,
+        payload.len() as u8,
+        0x53,
+        0xff,
+        0x15,
+        0x68,
+        0x20,
+        0x40,
+        0x00, // VirtualProtect
+        0x6a,
+        0x00,
+        0x6a,
+        0x00,
+        0x6a,
+        0x02,
+        0x6a,
+        0x00,
+        0x6a,
+        0x00,
+        0x68,
+        0x00,
+        0x00,
+        0x00,
+        0x40,
+        0x68,
+        0x80,
+        0x11,
+        0x40,
+        0x00,
+        0xff,
+        0x15,
+        0x6c,
+        0x20,
+        0x40,
+        0x00, // CreateFileA
+        0x89,
+        0xc6, // mov esi,eax
+        0x6a,
+        0x00,
+        0x68,
+        0xe4,
+        0x11,
+        0x40,
+        0x00,
+        0x6a,
+        payload.len() as u8,
+        0x68,
+        0x20,
+        0x11,
+        0x40,
+        0x00,
+        0x56,
+        0xff,
+        0x15,
+        0x70,
+        0x20,
+        0x40,
+        0x00, // WriteFile
+        0x56,
+        0xff,
+        0x15,
+        0x74,
+        0x20,
+        0x40,
+        0x00, // CloseHandle
+        0x6a,
+        0x00,
+        0xff,
+        0x15,
+        0x78,
+        0x20,
+        0x40,
+        0x00,
+        0xcc,
+    ];
+    bytes[0x200..0x400].fill(0);
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+    bytes[0x320..0x320 + payload.len()].copy_from_slice(payload);
+    write_c_string(&mut bytes, 0x380, b"C:\\Temp\\aegis-runtime.bin");
+    let names = [0x2090, 0x20a0, 0x20b4, 0x20c8, 0x20d8, 0x20e8, 0x20f8, 0];
+    for (index, name_rva) in names.into_iter().enumerate() {
+        put_u32(&mut bytes, 0x440 + index * 4, name_rva);
+        put_u32(&mut bytes, 0x460 + index * 4, name_rva);
+    }
+    write_hint_name(&mut bytes, 0x490, b"VirtualAlloc");
+    write_hint_name(&mut bytes, 0x4a0, b"RtlMoveMemory");
+    write_hint_name(&mut bytes, 0x4b4, b"VirtualProtect");
+    write_hint_name(&mut bytes, 0x4c8, b"CreateFileA");
+    write_hint_name(&mut bytes, 0x4d8, b"WriteFile");
+    write_hint_name(&mut bytes, 0x4e8, b"CloseHandle");
+    write_hint_name(&mut bytes, 0x4f8, b"ExitProcess");
+    bytes
+}
+
 fn write_section(bytes: &mut [u8], offset: usize, name: &[u8], layout: (u32, u32, u32, u32, u32)) {
     let (virtual_size, virtual_address, raw_size, raw_offset, characteristics) = layout;
     bytes[offset..offset + name.len().min(8)].copy_from_slice(&name[..name.len().min(8)]);

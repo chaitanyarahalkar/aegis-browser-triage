@@ -301,6 +301,20 @@ impl VirtualWindows {
         self.last_error = 0;
         data.len()
     }
+
+    pub fn file_snapshots(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.files
+            .iter()
+            .filter(|(_, bytes)| !bytes.is_empty())
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+    }
+
+    pub fn remote_snapshots(&self) -> impl Iterator<Item = (u32, u32, &[u8])> {
+        self.remote_memory
+            .iter()
+            .filter(|(_, bytes)| bytes.iter().any(|byte| *byte != 0))
+            .map(|((process, address), bytes)| (*process, *address, bytes.as_slice()))
+    }
 }
 
 #[cfg(test)]

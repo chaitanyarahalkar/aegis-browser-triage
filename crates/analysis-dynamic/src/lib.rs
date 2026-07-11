@@ -1,4 +1,5 @@
 mod api;
+mod artifact;
 mod cpu;
 mod engine;
 #[cfg(any(test, feature = "fixtures"))]
@@ -10,7 +11,20 @@ mod windows;
 
 pub use model::*;
 
+use std::collections::BTreeMap;
 use thiserror::Error;
+
+#[derive(Debug)]
+pub struct DynamicAnalysis {
+    pub report: DynamicReport,
+    artifacts: BTreeMap<String, Vec<u8>>,
+}
+
+impl DynamicAnalysis {
+    pub fn artifact_bytes(&self, id: &str) -> Option<&[u8]> {
+        self.artifacts.get(id).map(Vec::as_slice)
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum DynamicError {
@@ -43,6 +57,20 @@ pub fn analyze_dynamic(
     bytes: &[u8],
     options: &DynamicOptions,
 ) -> Result<DynamicReport, DynamicError> {
+    if bytes.is_empty() {
+        return Err(DynamicError::Empty);
+    }
+    if bytes.len() > analysis_core_limit() {
+        return Err(DynamicError::TooLarge);
+    }
+    Ok(analyze_dynamic_with_artifacts(name, bytes, options)?.report)
+}
+
+pub fn analyze_dynamic_with_artifacts(
+    name: impl Into<String>,
+    bytes: &[u8],
+    options: &DynamicOptions,
+) -> Result<DynamicAnalysis, DynamicError> {
     if bytes.is_empty() {
         return Err(DynamicError::Empty);
     }
@@ -92,7 +120,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 2);
+        assert_eq!(report.schema_version, 3);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -140,6 +168,38 @@ mod tests {
                 .iter()
                 .any(|event| event.subject.contains("Resolved dynamic symbol"))
         );
+    }
+
+    #[test]
+    fn captures_runtime_memory_and_virtual_file_artifacts() {
+        let bytes = fixture::runtime_artifact_pe32();
+        let analysis =
+            analyze_dynamic_with_artifacts("artifact.exe", &bytes, &DynamicOptions::default())
+                .unwrap();
+        assert!(matches!(
+            analysis.report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert!(
+            analysis
+                .report
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.kind == ArtifactKind::Memory
+                    && artifact.trigger == "executable_transition")
+        );
+        assert!(
+            analysis
+                .report
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.kind == ArtifactKind::VirtualFile)
+        );
+        for artifact in &analysis.report.artifacts {
+            assert!(analysis.artifact_bytes(&artifact.id).is_some());
+        }
+        let json = serde_json::to_string(&analysis.report).unwrap();
+        assert!(!json.contains("\"bytes\":["));
     }
 
     #[test]

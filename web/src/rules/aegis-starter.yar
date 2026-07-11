@@ -46,3 +46,14 @@ rule Suspicious_UPX_Markers : packer {
   condition:
     all of them
 }
+
+rule Aegis_Safe_Runtime_Artifact : demo safe runtime {
+  meta:
+    description = "Identifies the first-party inert runtime artifact fixture"
+    severity = "info"
+    author = "Aegis"
+  strings:
+    $marker = "AEGIS_SAFE_RUNTIME_ARTIFACT" ascii
+  condition:
+    $marker
+}

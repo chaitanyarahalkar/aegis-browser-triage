@@ -1,8 +1,9 @@
-import type { YaraCompileSummary, YaraProgressStage, YaraReport, YaraWorkerResponse } from './types'
+import type { ArtifactYaraResult, YaraCompileSummary, YaraProgressStage, YaraReport, YaraWorkerResponse } from './types'
 
 const COMPILE_TIMEOUT_MS = 5_000
 const SCAN_TIMEOUT_MS = 10_000
-type Pending = { resolve: (value: YaraCompileSummary | YaraReport) => void; reject: (error: Error) => void; onProgress: (stage: YaraProgressStage) => void; timeout: number }
+type YaraResult = YaraCompileSummary | YaraReport | ArtifactYaraResult[]
+type Pending = { resolve: (value: YaraResult) => void; reject: (error: Error) => void; onProgress: (stage: YaraProgressStage) => void; timeout: number }
 
 export class YaraClient {
   private worker: Worker | null = null
@@ -16,10 +17,16 @@ export class YaraClient {
     return this.request<YaraReport>('scan', SCAN_TIMEOUT_MS, onProgress, (worker, jobId) => worker.postMessage({ type: 'scan-yara', jobId, name: file.name, buffer, options: JSON.stringify({ max_matches_per_pattern: 100, max_reported_matches: 10_000 }) }, [buffer]))
   }
 
+  scanArtifacts(artifacts: Array<{ id: string; name: string; buffer: ArrayBuffer }>, onProgress: (stage: YaraProgressStage) => void): Promise<ArtifactYaraResult[]> {
+    const total = artifacts.reduce((sum, artifact) => sum + artifact.buffer.byteLength, 0)
+    if (artifacts.length > 128 || total > 32 * 1024 * 1024) return Promise.reject(new Error('Artifact YARA batch exceeds the safety limit'))
+    return this.request<ArtifactYaraResult[]>('artifact scan', 15_000, onProgress, (worker, jobId) => worker.postMessage({ type: 'scan-yara-artifacts', jobId, artifacts, options: JSON.stringify({ max_matches_per_pattern: 100, max_reported_matches: 10_000 }) }, artifacts.map((artifact) => artifact.buffer)))
+  }
+
   reset(): void { if (this.worker) this.worker.postMessage({ type: 'reset-yara' }) }
   close(): void { this.failAndReset(new Error('YARA session closed')) }
 
-  private request<T extends YaraCompileSummary | YaraReport>(label: string, limit: number, onProgress: (stage: YaraProgressStage) => void, send: (worker: Worker, jobId: string) => void): Promise<T> {
+  private request<T extends YaraResult>(label: string, limit: number, onProgress: (stage: YaraProgressStage) => void, send: (worker: Worker, jobId: string) => void): Promise<T> {
     if (this.pending.size) this.failAndReset(new Error('Replaced by a new YARA operation'))
     const worker = this.ensureWorker()
     const jobId = crypto.randomUUID()
@@ -48,6 +55,7 @@ export class YaraClient {
     this.pending.delete(message.jobId)
     if (message.type === 'yara-compiled') pending.resolve(message.summary)
     else if (message.type === 'yara-completed') pending.resolve(message.report)
+    else if (message.type === 'yara-artifacts-completed') pending.resolve(message.results)
     else pending.reject(new Error(message.message))
   }
 
