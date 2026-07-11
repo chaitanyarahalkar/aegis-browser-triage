@@ -4,6 +4,8 @@ fn main() {
         .unwrap_or_else(|| "safe-dynamic-pe32.exe".into());
     let bytes = if std::env::args().any(|argument| argument == "--artifact") {
         analysis_dynamic::fixture::runtime_artifact_pe32()
+    } else if std::env::args().any(|argument| argument == "--seh") {
+        analysis_dynamic::fixture::seh_pe32()
     } else {
         analysis_dynamic::fixture::safe_dynamic_pe32()
     };

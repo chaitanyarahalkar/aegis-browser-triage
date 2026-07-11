@@ -176,6 +176,19 @@ export default function App() {
     }
   }, [inspectFile])
 
+  const analyzeSehDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-seh-pe32.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('SEH fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'SEH fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
   const runDynamicAnalysis = useCallback(async () => {
     if (!currentFile) return
     const run = ++dynamicRun.current
@@ -304,6 +317,7 @@ export default function App() {
               inspectFile={inspectFile}
               analyzeDemo={analyzeDemo}
               analyzeArtifactDemo={analyzeArtifactDemo}
+              analyzeSehDemo={analyzeSehDemo}
             />
             <div className="privacy-row">
               <span>No uploads</span>
@@ -371,13 +385,14 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
   inspectFile: (file: File) => Promise<void>
   analyzeDemo: () => Promise<void>
   analyzeArtifactDemo: () => Promise<void>
+  analyzeSehDemo: () => Promise<void>
 }) {
   return (
     <div
@@ -400,6 +415,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
         <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzeSehDemo()}>Use SEH demo</button>
       </div>
       <input
         ref={inputRef}
@@ -581,7 +597,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'profiles'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
@@ -613,7 +629,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
     )
   }
 
-  const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length + report.injection.length + report.persistence.length
+  const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length + report.injection.length + report.persistence.length + report.exceptions.length
   return (
     <div className="dynamic-report">
       <div className="profile-toolbar"><ProfilePicker value={profileId} onChange={onSelectProfile} /><button className="button secondary compact" type="button" onClick={onRunProfiles}>Run profile matrix</button><span>{report.profile.environment.windows_version} · {report.profile.environment.network_mode}</span></div>
@@ -639,6 +655,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
         <button className={view === 'coverage' ? 'active' : ''} type="button" onClick={() => setView('coverage')}>Coverage</button>
         <button className={view === 'artifacts' ? 'active' : ''} type="button" onClick={() => setView('artifacts')}>Artifacts ({report.artifacts.length})</button>
         <button className={view === 'unpacking' ? 'active' : ''} type="button" onClick={() => setView('unpacking')}>Unpacking ({report.payload_generations.length})</button>
+        <button className={view === 'exceptions' ? 'active' : ''} type="button" onClick={() => setView('exceptions')}>Exceptions ({report.exceptions.length})</button>
         {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
@@ -648,9 +665,15 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
       {view === 'coverage' && <CoverageView report={report} />}
       {view === 'artifacts' && <ArtifactsView report={report} client={client} yara={artifactYara} status={artifactYaraStatus} error={artifactYaraError} onScan={onScanArtifacts} onTimeline={(sequence) => { setTimelineTarget(sequence); setView('timeline') }} />}
       {view === 'unpacking' && <UnpackingView report={report} yara={artifactYara} status={artifactYaraStatus} onScan={onScanArtifacts} />}
+      {view === 'exceptions' && <ExceptionView report={report} />}
       {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
+}
+
+function ExceptionView({ report }: { report: DynamicReport }) {
+  if (!report.exceptions.length) return <EmptyState title="No guest exceptions dispatched" text="Execution did not reach a breakpoint or fault with a valid bounded guest handler." />
+  return <Section title="Structured exception handling" description="Guest handlers ran inside the interpreter. Invalid or exhausted chains fall back to structured termination."><Table><thead><tr><th>#</th><th>Exception</th><th>Address</th><th>Handler</th><th>Frame</th><th>Disposition</th><th>Outcome</th></tr></thead><tbody>{report.exceptions.map((event) => <tr key={event.sequence}><td>{event.sequence + 1}</td><td><code className="strong-code">{event.name}</code><small>{formatOffset(event.code)}</small></td><td><code>{formatOffset(event.address)}</code></td><td><code>{event.handler == null ? '—' : formatOffset(event.handler)}</code></td><td><code>{event.establisher_frame == null ? '—' : formatOffset(event.establisher_frame)}</code></td><td>{event.disposition == null ? 'Pending' : event.disposition === -1 ? 'Continue execution' : event.disposition === 0 ? 'Continue search' : event.disposition}</td><td><span className="tag">{event.outcome.replaceAll('_', ' ')}</span></td></tr>)}</tbody></Table></Section>
 }
 
 function UnpackingView({ report, yara, status, onScan }: { report: DynamicReport; yara: ArtifactYaraResult[]; status: 'idle' | 'running' | 'done' | 'error'; onScan: () => void }) {

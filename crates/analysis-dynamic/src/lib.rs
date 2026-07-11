@@ -121,7 +121,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 5);
+        assert_eq!(report.schema_version, 6);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -245,6 +245,26 @@ mod tests {
         }
         let json = serde_json::to_string(&analysis.report).unwrap();
         assert!(!json.contains("\"bytes\":["));
+    }
+
+    #[test]
+    fn dispatches_breakpoint_through_guest_seh_and_continues() {
+        let report =
+            analyze_dynamic("seh.exe", &fixture::seh_pe32(), &DynamicOptions::default()).unwrap();
+        assert!(matches!(
+            report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert_eq!(report.exceptions.len(), 1);
+        assert_eq!(report.exceptions[0].code, 0x8000_0003);
+        assert_eq!(report.exceptions[0].outcome, "continued_execution");
+        assert_eq!(report.exceptions[0].disposition, Some(-1));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.id == "exception-dispatch")
+        );
     }
 
     #[test]

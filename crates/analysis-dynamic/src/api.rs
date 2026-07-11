@@ -50,13 +50,15 @@ pub fn signature(name: &str) -> ApiSignature {
         | "virtualfree"
         | "localalloc"
         | "globalalloc"
-        | "checkremotedebuggerpresent" => (2, true),
+        | "checkremotedebuggerpresent"
+        | "addvectoredexceptionhandler" => (2, true),
         "virtualprotect"
         | "connect"
         | "heapfree"
         | "getenvironmentvariablea"
         | "getenvironmentvariablew" => (3, true),
         "virtualalloc" | "send" | "recv" => (4, true),
+        "raiseexception" => (4, true),
         "heapalloc" => (3, true),
         "regopenkeyexa" | "regopenkeyexw" | "internetopena" | "internetopenw" | "writefile"
         | "readfile" => (5, true),
@@ -118,7 +120,7 @@ pub fn signature(name: &str) -> ApiSignature {
         "openscmanagera" | "openscmanagerw" | "openservicea" | "openservicew" | "startservicea"
         | "startservicew" => (3, true),
         "createservicea" | "createservicew" => (13, true),
-        "deleteservice" => (1, true),
+        "deleteservice" | "removevectoredexceptionhandler" => (1, true),
         "shellexecutea" | "shellexecutew" => (6, true),
         _ => (decorated_argument_count(name).unwrap_or(0), false),
     };

@@ -119,6 +119,27 @@ pub fn dynamic_resolution_pe32() -> Vec<u8> {
     bytes
 }
 
+pub fn seh_pe32() -> Vec<u8> {
+    let mut bytes = safe_dynamic_pe32();
+    let code = [
+        0x68, 0x00, 0x11, 0x40, 0x00, // push handler
+        0x6a, 0xff, // push end-of-chain
+        0x64, 0x89, 0x25, 0x00, 0x00, 0x00, 0x00, // mov fs:[0], esp
+        0xcc, // breakpoint dispatched through SEH
+        0x6a, 0x00, // push 0
+        0xff, 0x15, 0x6c, 0x20, 0x40, 0x00, // call [ExitProcess]
+        0xf4,
+    ];
+    let handler = [
+        0xb8, 0xff, 0xff, 0xff, 0xff, // mov eax, EXCEPTION_CONTINUE_EXECUTION
+        0xc2, 0x10, 0x00, // ret 16
+    ];
+    bytes[0x200..0x400].fill(0);
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+    bytes[0x300..0x300 + handler.len()].copy_from_slice(&handler);
+    bytes
+}
+
 pub fn runtime_artifact_pe32() -> Vec<u8> {
     let mut bytes = safe_dynamic_pe32();
     let payload = b"MZ AEGIS_SAFE_RUNTIME_ARTIFACT powershell https://artifact.example.test\0";

@@ -66,6 +66,8 @@ Dynamic analysis:
 - 4,096 live handles, 1 MiB per virtual file, and 16 MiB total virtual file data
 - 4 MiB per synthetic remote-memory region and 16 MiB total remote-process memory
 - A bounded synthetic PEB/TEB and process environment that reveal no host values
+- Guest SEH chains dispatch at most 16 handlers per exception and retain at most 128
+  exception events; records and contexts live only in synthetic guest memory
 - Dynamic symbol resolution creates emulator-owned API stubs only; resolved
   addresses never refer to browser or host functions
 - TLS callbacks execute under the same instruction, time, memory, and worker limits

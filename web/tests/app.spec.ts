@@ -51,7 +51,7 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v5', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v6', { exact: true })).toBeVisible()
 })
 
 test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
@@ -149,7 +149,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(5)
+  expect(json.dynamic.schema_version).toBe(6)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
@@ -204,6 +204,19 @@ test('captures runtime artifacts, scans them with YARA, and gates raw export', a
   expect(json.dynamic.payload_generations.some((generation: { parent_id: string | null; executed: boolean }) => generation.parent_id && generation.executed)).toBe(true)
   expect(json.dynamic.artifact_yara.some((result: { report?: { matches: Array<{ identifier: string }> } }) => result.report?.matches.some((match) => match.identifier === 'Aegis_Safe_Runtime_Artifact'))).toBe(true)
   expect(json.dynamic.artifacts.every((artifact: Record<string, unknown>) => !('bytes' in artifact) && !('data' in artifact))).toBe(true)
+})
+
+test('dispatches a breakpoint through bounded guest SEH', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop exception inspection workflow')
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Use SEH demo' }).click()
+  await expect(page.getByText('aegis-safe-seh-pe32.exe')).toBeVisible()
+  await runDynamic(page)
+  await page.getByRole('button', { name: 'Exceptions (1)' }).click()
+  await expect(page.getByRole('heading', { name: 'Structured exception handling', exact: true })).toBeVisible()
+  await expect(page.getByText('breakpoint', { exact: true })).toBeVisible()
+  await expect(page.getByText('Continue execution', { exact: true })).toBeVisible()
+  await expect(page.getByText('continued execution', { exact: true })).toBeVisible()
 })
 
 test('does not contact third parties or persist sample data', async ({ page }) => {

@@ -153,6 +153,17 @@ export interface DynamicPersistenceEvent {
   value: string | null
 }
 
+export interface DynamicExceptionEvent {
+  sequence: number
+  code: number
+  name: string
+  address: number
+  handler: number | null
+  establisher_frame: number | null
+  disposition: number | null
+  outcome: string
+}
+
 export interface DynamicProcessEvent {
   operation: string
   command: string
@@ -237,6 +248,7 @@ export interface DynamicReport {
   memory: DynamicMemoryEvent[]
   injection: DynamicInjectionEvent[]
   persistence: DynamicPersistenceEvent[]
+  exceptions: DynamicExceptionEvent[]
   artifacts: ArtifactSummary[]
   artifact_stats: { count: number; retained_bytes: number; truncated: boolean }
   payload_generations: PayloadGeneration[]

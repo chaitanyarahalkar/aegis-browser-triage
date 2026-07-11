@@ -39,6 +39,8 @@ Dynamic reports currently include:
   synthetic remote memory, with hashes, entropy, strings, indicators, and origins
 - Bounded unpacking lineage for distinct written/executable memory generations,
   including parent links, execution state, executable heaps, and entry-point overwrites
+- Bounded x86 structured exception dispatch through guest `FS:[0]` chains, including
+  continue-execution and continue-search dispositions with synthetic records/contexts
 - Explicit batch YARA scanning of captured artifacts and confirmation-gated raw export
 - Explainable findings derived from observed behavior
 

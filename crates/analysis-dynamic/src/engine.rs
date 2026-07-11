@@ -1,8 +1,9 @@
 use crate::{
     ApiEvent, ArtifactKind, ArtifactOrigin, DynamicAnalysis, DynamicError, DynamicFinding,
-    DynamicOptions, DynamicReport, DynamicSeverity, ExecutionCoverage, ExecutionProfile, FileEvent,
-    HARD_MAX_API_EVENTS, InjectionEvent, InstructionEvent, MemoryEvent, NetworkEvent, NetworkMode,
-    PersistenceEvent, ProcessEvent, RegistryEvent, Termination, TimelineEvent,
+    DynamicOptions, DynamicReport, DynamicSeverity, ExceptionEvent, ExecutionCoverage,
+    ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent, InstructionEvent,
+    MemoryEvent, NetworkEvent, NetworkMode, PersistenceEvent, ProcessEvent, RegistryEvent,
+    Termination, TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
     cpu::Cpu,
@@ -17,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const ENTRY_RETURN_SENTINEL: u32 = 0xffff_fff0;
 const TLS_RETURN_SENTINEL: u32 = 0xffff_ffe0;
+const EXCEPTION_RETURN_SENTINEL: u32 = 0xffff_ffd0;
 const HEAP_BASE: u32 = 0x1000_0000;
 const DYNAMIC_API_BASE: u32 = 0x7100_0000;
 const PROCESS_ENV_BASE: u32 = 0x2000_0000;
@@ -25,6 +27,11 @@ const COMMAND_LINE_W: u32 = PROCESS_ENV_BASE + 0x400;
 const NETWORK_RESULT_BASE: u32 = PROCESS_ENV_BASE + 0x800;
 const TEB_BASE: u32 = 0x7ffde000;
 const PEB_BASE: u32 = 0x7ffdf000;
+const EXCEPTION_SCRATCH_BASE: u32 = PROCESS_ENV_BASE + 0x1000;
+const EXCEPTION_RECORD_BASE: u32 = EXCEPTION_SCRATCH_BASE;
+const EXCEPTION_CONTEXT_BASE: u32 = EXCEPTION_SCRATCH_BASE + 0x100;
+const MAX_EXCEPTION_EVENTS: usize = 128;
+const MAX_SEH_DEPTH: usize = 16;
 
 pub(crate) fn run(
     _name: String,
@@ -51,6 +58,15 @@ pub(crate) fn run(
     loaded
         .memory
         .map(PEB_BASE, 0x1000, Permissions::READ_WRITE, "synthetic PEB")?;
+    loaded.memory.map(
+        EXCEPTION_SCRATCH_BASE,
+        0x1000,
+        Permissions::READ_WRITE,
+        "synthetic exception scratch",
+    )?;
+    loaded
+        .memory
+        .write_force(TEB_BASE, &u32::MAX.to_le_bytes())?;
     loaded
         .memory
         .write_force(TEB_BASE + 0x18, &TEB_BASE.to_le_bytes())?;
@@ -95,6 +111,7 @@ pub(crate) fn run(
         memory_events: Vec::new(),
         injection: Vec::new(),
         persistence: Vec::new(),
+        exceptions: Vec::new(),
         warnings: loaded.warnings,
         termination: None,
         truncated: false,
@@ -112,6 +129,9 @@ pub(crate) fn run(
         artifacts: ArtifactStore::default(),
         generations: GenerationTracker::default(),
         environment,
+        pending_exception: None,
+        vectored_handlers: Vec::new(),
+        queued_exception: None,
     };
     machine.start_execution()?;
     machine.execute();
@@ -182,6 +202,7 @@ pub(crate) fn run(
         memory: machine.memory_events,
         injection: machine.injection,
         persistence: machine.persistence,
+        exceptions: machine.exceptions,
         artifacts: artifact_summaries,
         artifact_stats,
         payload_generations,
@@ -220,6 +241,7 @@ struct Machine {
     memory_events: Vec<MemoryEvent>,
     injection: Vec<InjectionEvent>,
     persistence: Vec<PersistenceEvent>,
+    exceptions: Vec<ExceptionEvent>,
     warnings: Vec<String>,
     termination: Option<Termination>,
     truncated: bool,
@@ -237,6 +259,21 @@ struct Machine {
     artifacts: ArtifactStore,
     generations: GenerationTracker,
     environment: crate::EnvironmentProfile,
+    pending_exception: Option<PendingException>,
+    vectored_handlers: Vec<u32>,
+    queued_exception: Option<(u32, String)>,
+}
+
+struct PendingException {
+    code: u32,
+    name: String,
+    address: u32,
+    resume_eip: u32,
+    frame: u32,
+    depth: usize,
+    fallback: Termination,
+    event_index: usize,
+    vectored_index: Option<usize>,
 }
 
 impl Machine {
@@ -250,6 +287,10 @@ impl Machine {
                 if let Err(error) = self.start_next_target() {
                     self.termination = Some(memory_termination(error, "TLS callback"));
                 }
+                continue;
+            }
+            if self.cpu.eip == EXCEPTION_RETURN_SENTINEL {
+                self.complete_exception_handler();
                 continue;
             }
             if let Some(import) = self.imports.get(&self.cpu.eip).cloned() {
@@ -270,15 +311,35 @@ impl Machine {
             let bytes = match self.memory.fetch(address, 15) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    self.termination = Some(memory_termination(error, "execute"));
-                    break;
+                    let fallback = memory_termination(error, "execute");
+                    if !self.dispatch_exception(
+                        0xc000_0005,
+                        "access_violation",
+                        address,
+                        address,
+                        fallback.clone(),
+                    ) {
+                        self.termination = Some(fallback);
+                        break;
+                    }
+                    continue;
                 }
             };
             let mut decoder = Decoder::with_ip(32, bytes, address as u64, DecoderOptions::NONE);
             let instruction = decoder.decode();
             if instruction.code() == Code::INVALID {
-                self.termination = Some(Termination::InvalidInstruction { address });
-                break;
+                let fallback = Termination::InvalidInstruction { address };
+                if !self.dispatch_exception(
+                    0xc000_001d,
+                    "illegal_instruction",
+                    address,
+                    address.wrapping_add(1),
+                    fallback.clone(),
+                ) {
+                    self.termination = Some(fallback);
+                    break;
+                }
+                continue;
             }
             let length = instruction.len();
             if self.instructions.len() < self.options.max_trace_events {
@@ -294,24 +355,234 @@ impl Machine {
             self.cpu.eip = instruction.next_ip32();
             self.instruction_count += 1;
             if let Err(error) = self.execute_instruction(&instruction) {
-                match error {
+                let fallback = match error {
                     DynamicError::MemoryRead { .. }
                     | DynamicError::MemoryWrite { .. }
                     | DynamicError::MemoryExecute { .. } => {
-                        self.termination = Some(memory_termination(error, "instruction"));
+                        memory_termination(error, "instruction")
                     }
                     _ => {
-                        self.termination = Some(Termination::UnsupportedInstruction {
+                        self.warnings.push(error.to_string());
+                        Termination::UnsupportedInstruction {
                             address,
                             instruction: instruction.to_string(),
-                        });
-                        self.warnings.push(error.to_string());
+                        }
                     }
+                };
+                let (code, name) = if matches!(fallback, Termination::MemoryFault { .. }) {
+                    (0xc000_0005, "access_violation")
+                } else {
+                    (0xc000_001d, "illegal_instruction")
+                };
+                if !self.dispatch_exception(code, name, address, self.cpu.eip, fallback.clone()) {
+                    self.termination = Some(fallback);
                 }
             }
         }
         if self.termination.is_none() {
             self.termination = Some(Termination::InstructionLimit);
+        }
+    }
+
+    fn dispatch_exception(
+        &mut self,
+        code: u32,
+        name: &str,
+        address: u32,
+        resume_eip: u32,
+        fallback: Termination,
+    ) -> bool {
+        if self.pending_exception.is_some() || self.exceptions.len() >= MAX_EXCEPTION_EVENTS {
+            return false;
+        }
+        let frame = self.memory.read_u32(TEB_BASE).unwrap_or(u32::MAX);
+        let pending = PendingException {
+            code,
+            name: name.into(),
+            address,
+            resume_eip,
+            frame,
+            depth: 0,
+            fallback,
+            event_index: 0,
+            vectored_index: (!self.vectored_handlers.is_empty()).then_some(0),
+        };
+        self.begin_exception_handler(pending)
+    }
+
+    fn begin_exception_handler(&mut self, mut pending: PendingException) -> bool {
+        if pending.depth >= MAX_SEH_DEPTH {
+            return false;
+        }
+        let handler = if let Some(index) = pending.vectored_index {
+            let Some(handler) = self.vectored_handlers.get(index).copied() else {
+                return false;
+            };
+            handler
+        } else {
+            if matches!(pending.frame, 0 | u32::MAX) {
+                return false;
+            }
+            let Ok(handler) = self.memory.read_u32(pending.frame.wrapping_add(4)) else {
+                return false;
+            };
+            handler
+        };
+        if self.memory.fetch(handler, 1).is_err() {
+            return false;
+        }
+        self.write_exception_context(&pending);
+        let stack_ready = if pending.vectored_index.is_some() {
+            let pointers = EXCEPTION_SCRATCH_BASE + 0x3e0;
+            let _ = self
+                .memory
+                .write_force(pointers, &EXCEPTION_RECORD_BASE.to_le_bytes());
+            let _ = self
+                .memory
+                .write_force(pointers + 4, &EXCEPTION_CONTEXT_BASE.to_le_bytes());
+            self.cpu.push(&mut self.memory, pointers).is_ok()
+                && self
+                    .cpu
+                    .push(&mut self.memory, EXCEPTION_RETURN_SENTINEL)
+                    .is_ok()
+        } else {
+            self.cpu.push(&mut self.memory, 0).is_ok()
+                && self
+                    .cpu
+                    .push(&mut self.memory, EXCEPTION_CONTEXT_BASE)
+                    .is_ok()
+                && self.cpu.push(&mut self.memory, pending.frame).is_ok()
+                && self
+                    .cpu
+                    .push(&mut self.memory, EXCEPTION_RECORD_BASE)
+                    .is_ok()
+                && self
+                    .cpu
+                    .push(&mut self.memory, EXCEPTION_RETURN_SENTINEL)
+                    .is_ok()
+        };
+        if !stack_ready {
+            return false;
+        }
+        let event_index = self.exceptions.len();
+        self.exceptions.push(ExceptionEvent {
+            sequence: event_index as u64,
+            code: pending.code,
+            name: pending.name.clone(),
+            address: pending.address,
+            handler: Some(handler),
+            establisher_frame: pending.vectored_index.is_none().then_some(pending.frame),
+            disposition: None,
+            outcome: "dispatched".into(),
+        });
+        self.timeline.push(TimelineEvent {
+            sequence: self.timeline.len() as u64,
+            instruction: self.instruction_count,
+            virtual_time_ms: self.virtual_time_ms,
+            category: "exception".into(),
+            operation: "seh_dispatch".into(),
+            subject: format!(
+                "{} 0x{:08x} -> 0x{handler:08x}",
+                pending.name, pending.address
+            ),
+            source_api: "SEH".into(),
+        });
+        pending.event_index = event_index;
+        self.cpu.eip = handler;
+        self.pending_exception = Some(pending);
+        true
+    }
+
+    fn write_exception_context(&mut self, pending: &PendingException) {
+        let _ = self
+            .memory
+            .write_force(EXCEPTION_RECORD_BASE, &pending.code.to_le_bytes());
+        let _ = self
+            .memory
+            .write_force(EXCEPTION_RECORD_BASE + 12, &pending.address.to_le_bytes());
+        for (offset, value) in [
+            (0x9c, self.cpu.edi),
+            (0xa0, self.cpu.esi),
+            (0xa4, self.cpu.ebx),
+            (0xa8, self.cpu.edx),
+            (0xac, self.cpu.ecx),
+            (0xb0, self.cpu.eax),
+            (0xb4, self.cpu.ebp),
+            (0xb8, pending.resume_eip),
+            (0xc0, self.cpu.flags_value()),
+            (0xc4, self.cpu.esp),
+        ] {
+            let _ = self
+                .memory
+                .write_force(EXCEPTION_CONTEXT_BASE + offset, &value.to_le_bytes());
+        }
+    }
+
+    fn complete_exception_handler(&mut self) {
+        let Some(mut pending) = self.pending_exception.take() else {
+            self.termination = Some(Termination::MemoryFault {
+                address: EXCEPTION_RETURN_SENTINEL,
+                operation: "exception return without pending handler".into(),
+            });
+            return;
+        };
+        let disposition = self.cpu.eax as i32;
+        if let Some(event) = self.exceptions.get_mut(pending.event_index) {
+            event.disposition = Some(disposition);
+        }
+        match disposition {
+            -1 => {
+                for (offset, target) in [
+                    (0x9c, &mut self.cpu.edi),
+                    (0xa0, &mut self.cpu.esi),
+                    (0xa4, &mut self.cpu.ebx),
+                    (0xa8, &mut self.cpu.edx),
+                    (0xac, &mut self.cpu.ecx),
+                    (0xb0, &mut self.cpu.eax),
+                    (0xb4, &mut self.cpu.ebp),
+                    (0xc4, &mut self.cpu.esp),
+                ] {
+                    if let Ok(value) = self.memory.read_u32(EXCEPTION_CONTEXT_BASE + offset) {
+                        *target = value;
+                    }
+                }
+                self.cpu.eip = self
+                    .memory
+                    .read_u32(EXCEPTION_CONTEXT_BASE + 0xb8)
+                    .unwrap_or(pending.resume_eip);
+                if let Ok(flags) = self.memory.read_u32(EXCEPTION_CONTEXT_BASE + 0xc0) {
+                    self.cpu.set_flags_value(flags);
+                }
+                if let Some(event) = self.exceptions.get_mut(pending.event_index) {
+                    event.outcome = "continued_execution".into();
+                }
+            }
+            0 => {
+                if let Some(event) = self.exceptions.get_mut(pending.event_index) {
+                    event.outcome = "continued_search".into();
+                }
+                if let Some(index) = pending.vectored_index {
+                    if index + 1 < self.vectored_handlers.len() {
+                        pending.vectored_index = Some(index + 1);
+                    } else {
+                        pending.vectored_index = None;
+                        pending.frame = self.memory.read_u32(TEB_BASE).unwrap_or(u32::MAX);
+                    }
+                } else {
+                    pending.frame = self.memory.read_u32(pending.frame).unwrap_or(u32::MAX);
+                }
+                pending.depth += 1;
+                let fallback = pending.fallback.clone();
+                if !self.begin_exception_handler(pending) {
+                    self.termination = Some(fallback);
+                }
+            }
+            _ => {
+                if let Some(event) = self.exceptions.get_mut(pending.event_index) {
+                    event.outcome = "unhandled_disposition".into();
+                }
+                self.termination = Some(pending.fallback);
+            }
         }
     }
 
@@ -661,7 +932,19 @@ impl Machine {
             Cld => self.cpu.direction = false,
             Std => self.cpu.direction = true,
             Nop => {}
-            Int3 | Hlt => self.termination = Some(Termination::Halted),
+            Int3 => {
+                let fallback = Termination::Halted;
+                if !self.dispatch_exception(
+                    0x8000_0003,
+                    "breakpoint",
+                    instruction.ip32(),
+                    self.cpu.eip,
+                    fallback.clone(),
+                ) {
+                    self.termination = Some(fallback);
+                }
+            }
+            Hlt => self.termination = Some(Termination::Halted),
             _ => {
                 return Err(DynamicError::UnsupportedOperand(format!(
                     "mnemonic {:?}",
@@ -1156,6 +1439,17 @@ impl Machine {
             subject,
             source_api: import.name,
         });
+        if let Some((code, name)) = self.queued_exception.take()
+            && !self.dispatch_exception(
+                code,
+                &name,
+                return_address,
+                return_address,
+                Termination::Halted,
+            )
+        {
+            self.termination = Some(Termination::Halted);
+        }
         Ok(())
     }
 
@@ -1858,6 +2152,56 @@ impl Machine {
                 ),
                 Vec::new(),
             )),
+            "addvectoredexceptionhandler" => {
+                let first = args.first().copied().unwrap_or(0) != 0;
+                let handler = args.get(1).copied().unwrap_or(0);
+                if handler == 0
+                    || self.memory.fetch(handler, 1).is_err()
+                    || self.vectored_handlers.len() >= MAX_SEH_DEPTH
+                {
+                    return Ok((
+                        0,
+                        "Rejected invalid vectored exception handler".into(),
+                        hex_args(),
+                    ));
+                }
+                if first {
+                    self.vectored_handlers.insert(0, handler);
+                } else {
+                    self.vectored_handlers.push(handler);
+                }
+                Ok((
+                    handler,
+                    format!("Registered synthetic vectored handler 0x{handler:08x}"),
+                    vec![format!("0x{handler:08x}")],
+                ))
+            }
+            "removevectoredexceptionhandler" => {
+                let handler = args.first().copied().unwrap_or(0);
+                let removed = self
+                    .vectored_handlers
+                    .iter()
+                    .position(|value| *value == handler)
+                    .map(|index| self.vectored_handlers.remove(index))
+                    .is_some();
+                Ok((
+                    u32::from(removed),
+                    format!(
+                        "{} synthetic vectored handler 0x{handler:08x}",
+                        if removed { "Removed" } else { "Did not find" }
+                    ),
+                    vec![format!("0x{handler:08x}")],
+                ))
+            }
+            "raiseexception" => {
+                let code = args.first().copied().unwrap_or(0xe000_0001);
+                self.queued_exception = Some((code, "raised_exception".into()));
+                Ok((
+                    0,
+                    format!("Queued synthetic exception 0x{code:08x}"),
+                    hex_args(),
+                ))
+            }
             "checkremotedebuggerpresent" => {
                 if let Some(pointer) = args.get(1).copied().filter(|pointer| *pointer != 0) {
                     let _ = self
@@ -3030,6 +3374,9 @@ impl Machine {
                 evidence: persistence_evidence.into_iter().take(20).collect(),
             });
         }
+        if !self.exceptions.is_empty() {
+            findings.push(DynamicFinding { id: "exception-dispatch".into(), title: "Structured exception handling observed".into(), severity: DynamicSeverity::Medium, rationale: "The sample registered or reached guest exception handlers. Handlers executed only inside the bounded interpreter.".into(), evidence: self.exceptions.iter().take(20).map(|event| format!("{} at 0x{:08x} -> {}", event.name, event.address, event.outcome)).collect() });
+        }
         if findings.is_empty() {
             findings.push(DynamicFinding { id: "no-modeled-behavior".into(), title: "No modeled high-level behavior observed".into(), severity: DynamicSeverity::Info, rationale: "Execution may have completed, hit an unsupported instruction, or avoided the modeled APIs.".into(), evidence: vec![format!("{} instructions emulated", self.instruction_count)] });
         }
@@ -3191,6 +3538,7 @@ mod tests {
             memory_events: Vec::new(),
             injection: Vec::new(),
             persistence: Vec::new(),
+            exceptions: Vec::new(),
             warnings: Vec::new(),
             termination: None,
             truncated: false,
@@ -3208,6 +3556,9 @@ mod tests {
             artifacts: ArtifactStore::default(),
             generations: GenerationTracker::default(),
             environment: crate::EnvironmentProfile::default(),
+            pending_exception: None,
+            vectored_handlers: Vec::new(),
+            queued_exception: None,
         }
     }
 
@@ -3423,5 +3774,77 @@ mod tests {
         let (generations, _) = machine.generations.finish();
         assert_eq!(generations.len(), 1);
         assert!(generations[0].entry_point_overwrite);
+    }
+
+    #[test]
+    fn seh_continue_search_reaches_the_next_handler() {
+        let mut code = vec![0x90; 0x21];
+        code[0..5].copy_from_slice(&[0x31, 0xc0, 0xc2, 0x10, 0x00]);
+        code[0x10..0x18].copy_from_slice(&[0xb8, 0xff, 0xff, 0xff, 0xff, 0xc2, 0x10, 0x00]);
+        code[0x20] = 0xf4;
+        let mut machine = machine_with_code(&code);
+        machine
+            .memory
+            .map(
+                EXCEPTION_SCRATCH_BASE,
+                0x1000,
+                Permissions::READ_WRITE,
+                "exception scratch",
+            )
+            .unwrap();
+        machine
+            .memory
+            .map(TEB_BASE, 0x1000, Permissions::READ_WRITE, "test TEB")
+            .unwrap();
+        machine.memory.write_u32(TEB_BASE, 0x3000).unwrap();
+        machine.memory.write_u32(0x3000, 0x3008).unwrap();
+        machine.memory.write_u32(0x3004, 0x1000).unwrap();
+        machine.memory.write_u32(0x3008, u32::MAX).unwrap();
+        machine.memory.write_u32(0x300c, 0x1010).unwrap();
+        assert!(machine.dispatch_exception(
+            0x8000_0003,
+            "breakpoint",
+            0x1020,
+            0x1020,
+            Termination::Halted
+        ));
+        machine.execute();
+        assert_eq!(machine.exceptions.len(), 2);
+        assert_eq!(machine.exceptions[0].outcome, "continued_search");
+        assert_eq!(machine.exceptions[1].outcome, "continued_execution");
+    }
+
+    #[test]
+    fn vectored_handler_runs_before_the_seh_chain() {
+        let mut code = vec![0x90; 0x11];
+        code[0..8].copy_from_slice(&[0xb8, 0xff, 0xff, 0xff, 0xff, 0xc2, 0x04, 0x00]);
+        code[0x10] = 0xf4;
+        let mut machine = machine_with_code(&code);
+        machine
+            .memory
+            .map(
+                EXCEPTION_SCRATCH_BASE,
+                0x1000,
+                Permissions::READ_WRITE,
+                "exception scratch",
+            )
+            .unwrap();
+        machine
+            .memory
+            .map(TEB_BASE, 0x1000, Permissions::READ_WRITE, "test TEB")
+            .unwrap();
+        machine.memory.write_u32(TEB_BASE, u32::MAX).unwrap();
+        machine.vectored_handlers.push(0x1000);
+        assert!(machine.dispatch_exception(
+            0xe042_4242,
+            "raised_exception",
+            0x1010,
+            0x1010,
+            Termination::Halted
+        ));
+        machine.execute();
+        assert_eq!(machine.exceptions.len(), 1);
+        assert_eq!(machine.exceptions[0].establisher_frame, None);
+        assert_eq!(machine.exceptions[0].outcome, "continued_execution");
     }
 }
