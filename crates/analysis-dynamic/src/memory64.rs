@@ -9,6 +9,7 @@ struct Region64 {
     permissions: Permissions,
     name: String,
     dirty: bool,
+    written_ranges: Vec<(u64, u64)>,
 }
 
 impl Region64 {
@@ -60,6 +61,7 @@ impl Memory64 {
             permissions,
             name: name.into(),
             dirty: false,
+            written_ranges: Vec::new(),
         });
         self.regions.sort_by_key(|region| region.start);
         Ok(())
@@ -106,6 +108,24 @@ impl Memory64 {
         let offset = (address - region.start) as usize;
         region.data[offset..offset + data.len()].copy_from_slice(data);
         region.dirty |= !force && !data.is_empty();
+        if !force && !data.is_empty() {
+            let end = address.saturating_add(data.len() as u64);
+            let mut start = address;
+            let mut finish = end;
+            region.written_ranges.retain(|(range_start, range_end)| {
+                if start <= *range_end && finish >= *range_start {
+                    start = start.min(*range_start);
+                    finish = finish.max(*range_end);
+                    false
+                } else {
+                    true
+                }
+            });
+            if region.written_ranges.len() < 4_096 {
+                region.written_ranges.push((start, finish));
+                region.written_ranges.sort_unstable_by_key(|range| range.0);
+            }
+        }
         Ok(())
     }
 
@@ -156,6 +176,15 @@ impl Memory64 {
                 name: &region.name,
             })
     }
+
+    pub fn was_written(&self, address: u64) -> bool {
+        self.regions.iter().any(|region| {
+            region
+                .written_ranges
+                .iter()
+                .any(|(start, end)| address >= *start && address < *end)
+        })
+    }
 }
 
 pub(crate) struct Memory64RegionView<'a> {
@@ -183,6 +212,8 @@ mod tests {
             memory.read_u64(address + 0x100).unwrap(),
             0x1122_3344_5566_7788
         );
+        assert!(memory.was_written(address + 0x100));
+        assert!(!memory.was_written(address + 0x108));
         assert!(matches!(
             memory.map(address + 0x800, 0x1000, Permissions::READ, "overlap"),
             Err(DynamicError::OverlappingRegion { .. })

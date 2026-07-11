@@ -105,10 +105,11 @@ mod tests {
     fn safe_pe_executes_modeled_windows_apis() {
         let bytes = fixture::safe_dynamic_pe32();
         let report = analyze_dynamic("safe.exe", &bytes, &DynamicOptions::default()).unwrap();
-        assert!(matches!(
-            report.termination,
-            Termination::ExitProcess { code: 0 }
-        ));
+        assert!(
+            matches!(report.termination, Termination::ExitProcess { code: 0 }),
+            "unexpected termination: {:?}",
+            report.termination
+        );
         assert_eq!(
             report
                 .api_calls
@@ -153,10 +154,11 @@ mod tests {
     fn safe_pe64_executes_with_the_microsoft_x64_abi() {
         let bytes = fixture::safe_dynamic_pe64();
         let report = analyze_dynamic("safe64.exe", &bytes, &DynamicOptions::default()).unwrap();
-        assert!(matches!(
-            report.termination,
-            Termination::ExitProcess { code: 0 }
-        ));
+        assert!(
+            matches!(report.termination, Termination::ExitProcess { code: 0 }),
+            "unexpected termination: {:?}",
+            report.termination
+        );
         assert_eq!(report.profile.architecture, "x86-64 (64-bit)");
         assert!(report.profile.image_base > u32::MAX as u64);
         assert_eq!(
@@ -209,6 +211,132 @@ mod tests {
                 },
             );
         }
+    }
+
+    #[test]
+    fn pe64_parity_fixture_exercises_artifacts_state_provenance_threads_and_exceptions() {
+        let bytes = fixture::parity_dynamic_pe64();
+        let analysis = analyze_dynamic_with_artifacts(
+            "aegis-safe-parity-pe64.exe",
+            &bytes,
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        let report = &analysis.report;
+        assert!(
+            matches!(report.termination, Termination::ExitProcess { code: 0 }),
+            "unexpected termination: {:?}; apis: {:?}; last instruction: {:?}",
+            report.termination,
+            report
+                .api_calls
+                .iter()
+                .map(|event| event.name.as_str())
+                .collect::<Vec<_>>(),
+            report.instructions.last()
+        );
+        assert!(
+            report
+                .filesystem
+                .iter()
+                .any(|event| event.operation == "write")
+        );
+        assert!(
+            report
+                .filesystem
+                .iter()
+                .any(|event| event.operation == "read")
+        );
+        assert!(report.registry.iter().any(|event| event.operation == "set"));
+        assert!(
+            report
+                .registry
+                .iter()
+                .any(|event| event.operation == "query")
+        );
+        assert!(report.network.iter().any(|event| event.operation == "read"));
+        assert!(
+            report
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.kind == ArtifactKind::Memory)
+        );
+        assert!(
+            report
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.kind == ArtifactKind::VirtualFile)
+        );
+        assert!(
+            report
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.kind == ArtifactKind::NetworkDownload)
+        );
+        assert!(!report.payload_generations.is_empty());
+        assert!(
+            report
+                .provenance_flows
+                .iter()
+                .any(|flow| flow.sink == ProvenanceSinkKind::VirtualFile)
+        );
+        assert!(
+            report
+                .provenance_flows
+                .iter()
+                .any(|flow| flow.sink == ProvenanceSinkKind::ProcessCommand)
+        );
+        assert!(
+            report
+                .provenance_sources
+                .iter()
+                .any(|source| { source.kind == ProvenanceSourceKind::VirtualFile })
+        );
+        assert!(
+            report
+                .provenance_sources
+                .iter()
+                .any(|source| { source.kind == ProvenanceSourceKind::Registry })
+        );
+        assert_eq!(report.threads.len(), 2);
+        assert!(report.threads[1].instruction_count > 0);
+        assert_eq!(report.threads[1].exit_code, Some(0x1338));
+        assert!(
+            report
+                .thread_events
+                .iter()
+                .any(|event| event.operation == "created")
+        );
+        assert!(
+            report
+                .thread_events
+                .iter()
+                .any(|event| event.operation == "scheduled")
+        );
+        assert!(
+            report
+                .exceptions
+                .iter()
+                .any(|event| event.outcome == "continued_execution")
+        );
+        assert!(
+            report
+                .system
+                .iter()
+                .any(|event| event.operation == "runtime_function_lookup")
+        );
+        for artifact in &report.artifacts {
+            assert!(analysis.artifact_bytes(&artifact.id).is_some());
+        }
+        let repeated = analyze_dynamic(
+            "aegis-safe-parity-pe64.exe",
+            &bytes,
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(report).unwrap(),
+            serde_json::to_string(&repeated).unwrap()
+        );
     }
 
     #[test]

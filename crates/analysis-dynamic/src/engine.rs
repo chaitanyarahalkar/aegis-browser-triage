@@ -116,7 +116,7 @@ pub(crate) fn run(
     provenance.source(
         ProvenanceSourceKind::Sample,
         "loaded PE image",
-        loaded.image_base,
+        u64::from(loaded.image_base),
         loaded.image_size as usize,
         "loader",
         0,
@@ -945,7 +945,7 @@ impl Machine {
                 kind,
                 name,
                 trigger,
-                address: Some(start),
+                address: Some(u64::from(start)),
                 path: None,
                 permissions: Some(permissions.clone()),
                 force,
@@ -956,7 +956,7 @@ impl Machine {
         {
             self.generations.observe(GenerationObservation {
                 artifact_id,
-                region_base: start,
+                region_base: u64::from(start),
                 size,
                 instruction: self.instruction_count,
                 virtual_time_ms: self.virtual_time_ms,
@@ -1017,7 +1017,7 @@ impl Machine {
                     kind: ArtifactKind::RemoteMemory,
                     name: format!("process-{process:08x}-{address:08x}.bin"),
                     trigger: "remote_write",
-                    address: Some(address),
+                    address: Some(u64::from(address)),
                     path: None,
                     permissions: None,
                     force: true,
@@ -2549,7 +2549,7 @@ impl Machine {
                 let pointer = args.first().copied().unwrap_or(0);
                 let command = self.memory.read_c_string(pointer, 2_048);
                 self.provenance.observe(
-                    pointer,
+                    u64::from(pointer),
                     command.len().saturating_add(1),
                     ProvenanceSinkKind::ProcessCommand,
                     command.clone(),
@@ -2581,7 +2581,7 @@ impl Machine {
                     self.memory.read_c_string(pointer, 2_048)
                 };
                 self.provenance.observe(
-                    pointer,
+                    u64::from(pointer),
                     if name.ends_with('w') {
                         command.encode_utf16().count().saturating_add(1) * 2
                     } else {
@@ -2620,7 +2620,7 @@ impl Machine {
                 let command = format!("{file} {parameters}").trim().to_owned();
                 let unit = if wide { 2 } else { 1 };
                 self.provenance.observe(
-                    file_pointer,
+                    u64::from(file_pointer),
                     file.len().saturating_add(1) * unit,
                     ProvenanceSinkKind::ProcessCommand,
                     command.clone(),
@@ -2628,7 +2628,7 @@ impl Machine {
                     self.instruction_count,
                 );
                 self.provenance.observe(
-                    parameters_pointer,
+                    u64::from(parameters_pointer),
                     parameters.len().saturating_add(1) * unit,
                     ProvenanceSinkKind::ProcessCommand,
                     command.clone(),
@@ -2693,7 +2693,7 @@ impl Machine {
                     self.memory.read_c_string(binary_pointer, 2_048)
                 };
                 self.provenance.observe(
-                    binary_pointer,
+                    u64::from(binary_pointer),
                     if wide {
                         binary.encode_utf16().count().saturating_add(1) * 2
                     } else {
@@ -2869,8 +2869,8 @@ impl Machine {
                 let written = self.write_guest_string(destination, capacity, &source, true);
                 if written > 0 {
                     self.provenance.derive(
-                        source_pointer,
-                        destination,
+                        u64::from(source_pointer),
+                        u64::from(destination),
                         written.saturating_add(1) * 2,
                         "ANSI to UTF-16 conversion",
                         "MultiByteToWideChar",
@@ -2891,8 +2891,8 @@ impl Machine {
                 let written = self.write_guest_string(destination, capacity, &source, false);
                 if written > 0 {
                     self.provenance.derive(
-                        source_pointer,
-                        destination,
+                        u64::from(source_pointer),
+                        u64::from(destination),
                         written.saturating_add(1),
                         "UTF-16 to ANSI conversion",
                         "WideCharToMultiByte",
@@ -2911,7 +2911,8 @@ impl Machine {
                 let length = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
                 let data = self.memory.read(source, length)?.to_vec();
                 self.memory.write(destination, &data)?;
-                self.provenance.propagate(source, destination, length);
+                self.provenance
+                    .propagate(u64::from(source), u64::from(destination), length);
                 Ok((
                     destination,
                     format!("Copied {length} bounded memory bytes"),
@@ -2922,7 +2923,7 @@ impl Machine {
                 let destination = args.first().copied().unwrap_or(0);
                 let length = args.get(1).copied().unwrap_or(0).min(1024 * 1024) as usize;
                 self.memory.write(destination, &vec![0; length])?;
-                self.provenance.clear(destination, length);
+                self.provenance.clear(u64::from(destination), length);
                 Ok((
                     0,
                     format!("Zeroed {length} bounded memory bytes"),
@@ -2934,7 +2935,7 @@ impl Machine {
                 let value = args.get(1).copied().unwrap_or(0) as u8;
                 let length = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
                 self.memory.write(destination, &vec![value; length])?;
-                self.provenance.clear(destination, length);
+                self.provenance.clear(u64::from(destination), length);
                 Ok((
                     destination,
                     format!("Set {length} bounded memory bytes"),
@@ -3153,7 +3154,7 @@ impl Machine {
                     preview: Some(preview.clone()),
                 });
                 self.provenance.observe(
-                    source_pointer,
+                    u64::from(source_pointer),
                     written as usize,
                     ProvenanceSinkKind::RemoteProcess,
                     format!("process 0x{process_handle:08x} at 0x{address:08x}"),
@@ -3283,7 +3284,7 @@ impl Machine {
                     preview: Some(preview.clone()),
                 });
                 self.provenance.observe(
-                    source_pointer,
+                    u64::from(source_pointer),
                     length as usize,
                     ProvenanceSinkKind::VirtualFile,
                     self.windows
@@ -3323,7 +3324,7 @@ impl Machine {
                 self.provenance.source(
                     ProvenanceSourceKind::VirtualFile,
                     path.clone(),
-                    output,
+                    u64::from(output),
                     data.len(),
                     "ReadFile",
                     self.instruction_count,
@@ -3574,7 +3575,7 @@ impl Machine {
                     self.provenance.source(
                         ProvenanceSourceKind::Registry,
                         key.clone(),
-                        data_pointer,
+                        u64::from(data_pointer),
                         written,
                         name,
                         self.instruction_count,
@@ -3663,7 +3664,7 @@ impl Machine {
                     self.memory.read_c_string(pointer, 2_048)
                 };
                 self.provenance.observe(
-                    pointer,
+                    u64::from(pointer),
                     if name.ends_with('w') {
                         url.encode_utf16().count().saturating_add(1) * 2
                     } else {
@@ -3707,7 +3708,7 @@ impl Machine {
                         self.windows
                             .describe(handle)
                             .unwrap_or_else(|| format!("HTTP handle 0x{handle:08x}")),
-                        output,
+                        u64::from(output),
                         bytes.len(),
                         "InternetReadFile",
                         self.instruction_count,
@@ -3828,7 +3829,7 @@ impl Machine {
                     .unwrap_or_default()
                     .to_vec();
                 self.provenance.observe(
-                    body_pointer,
+                    u64::from(body_pointer),
                     body.len(),
                     ProvenanceSinkKind::NetworkRequest,
                     self.windows
@@ -3870,7 +3871,7 @@ impl Machine {
                         self.windows
                             .describe(handle)
                             .unwrap_or_else(|| format!("WinHTTP handle 0x{handle:08x}")),
-                        output,
+                        u64::from(output),
                         bytes.len(),
                         "WinHttpReadData",
                         self.instruction_count,
@@ -4114,7 +4115,7 @@ impl Machine {
                     .unwrap_or_else(|| format!("socket:0x{socket:x}"));
                 let offline = self.environment.network_mode == NetworkMode::Offline;
                 self.provenance.observe(
-                    args.get(1).copied().unwrap_or(0),
+                    u64::from(args.get(1).copied().unwrap_or(0)),
                     data.len(),
                     ProvenanceSinkKind::NetworkRequest,
                     destination.clone(),
@@ -4186,7 +4187,7 @@ impl Machine {
                     self.provenance.source(
                         ProvenanceSourceKind::Network,
                         destination.clone(),
-                        output,
+                        u64::from(output),
                         bytes.len(),
                         "recv",
                         self.instruction_count,
@@ -4671,9 +4672,9 @@ impl Machine {
                     let _ = self.memory.write(output, &digest);
                     if let Some((source, length)) = self.crypto_inputs.get(&handle).copied() {
                         self.provenance.derive_sized(
-                            source,
+                            u64::from(source),
                             length,
-                            output,
+                            u64::from(output),
                             digest.len(),
                             "SHA-256 digest",
                             "CryptGetHashParam",
@@ -4919,7 +4920,7 @@ impl Machine {
                 });
                 if permissions.execute {
                     self.provenance.observe(
-                        address,
+                        u64::from(address),
                         size,
                         ProvenanceSinkKind::ExecutableMemory,
                         format!("0x{address:08x} {}", permissions.display()),

@@ -82,6 +82,48 @@ test('runs a PE64 image through the x86-64 interpreter and ABI', async ({ page, 
   expect(json.dynamic.unwind_functions).toHaveLength(1)
 })
 
+test('shows PE64 parity artifacts, state, provenance, threads, and exceptions', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop x64 parity workflow')
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Use PE64 parity demo' }).click()
+  await expect(page.getByText('aegis-safe-parity-pe64.exe')).toBeVisible()
+  await expect(page.locator('.sample-title')).toContainText('PE · 64-bit X86_64')
+  await runDynamic(page)
+
+  await page.getByRole('button', { name: /^Artifacts \([1-9]/ }).click()
+  await expect(page.getByRole('heading', { name: 'Captured artifacts' })).toBeVisible()
+  await expect(page.getByText('virtual_file', { exact: true })).toBeVisible()
+  await expect(page.getByText('network_download', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: /^Unpacking \([1-9]/ }).click()
+  await expect(page.getByRole('heading', { name: 'Payload lineage' })).toBeVisible()
+  await page.getByRole('button', { name: /^Provenance \([1-9]/ }).click()
+  await expect(page.getByRole('heading', { name: 'Explainable data flows' })).toBeVisible()
+  await expect(page.getByText(/network → process command/)).toBeVisible()
+
+  await page.getByRole('button', { name: 'Threads (2)' }).click()
+  await expect(page.getByRole('heading', { name: 'Guest thread states' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'scheduled', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: /^Exceptions \([1-9]/ }).click()
+  await expect(page.getByRole('heading', { name: 'Structured exception handling' })).toBeVisible()
+  await expect(page.getByText('Continue execution', { exact: true })).toBeVisible()
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export report' }).click()
+  const download = await downloadPromise
+  const dynamic = JSON.parse(readFileSync(await download.path()!, 'utf8')).dynamic
+  expect(dynamic.profile.architecture).toBe('x86-64 (64-bit)')
+  expect(dynamic.filesystem.some((event: { operation: string }) => event.operation === 'write')).toBe(true)
+  expect(dynamic.registry.some((event: { operation: string }) => event.operation === 'set')).toBe(true)
+  expect(dynamic.network.some((event: { operation: string }) => event.operation === 'read')).toBe(true)
+  expect(dynamic.artifacts.length).toBeGreaterThanOrEqual(3)
+  expect(dynamic.payload_generations.length).toBeGreaterThan(0)
+  expect(dynamic.provenance_flows.length).toBeGreaterThanOrEqual(2)
+  expect(dynamic.thread_events.some((event: { operation: string }) => event.operation === 'scheduled')).toBe(true)
+  expect(dynamic.exceptions[0].outcome).toBe('continued_execution')
+  expect(dynamic.system.some((event: { operation: string }) => event.operation === 'runtime_function_lookup')).toBe(true)
+})
+
 test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop profile comparison workflow')
   await loadSafeDemo(page)

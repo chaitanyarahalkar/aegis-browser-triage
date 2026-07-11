@@ -1,15 +1,22 @@
 use crate::{
-    ApiEvent, ArtifactStats, DynamicAnalysis, DynamicError, DynamicFinding, DynamicOptions,
-    DynamicReport, DynamicSeverity, ExecutionCoverage, ExecutionDiagnostics, ExecutionProfile,
-    ExecutionSnapshot, GenerationStats, InstructionDiagnostic, InstructionEvent, MemoryEvent,
-    ProcessEvent, ProvenanceSource, ProvenanceSourceKind, ProvenanceStats, SnapshotEventCounts,
-    SnapshotRegisters, SnapshotStats, SystemEvent, Termination, ThreadSummary, TimelineEvent,
+    ApiEvent, ArtifactKind, ArtifactOrigin, DynamicAnalysis, DynamicError, DynamicFinding,
+    DynamicOptions, DynamicReport, DynamicSeverity, ExceptionEvent, ExecutionCoverage,
+    ExecutionDiagnostics, ExecutionProfile, ExecutionSnapshot, FileEvent, InstructionDiagnostic,
+    InstructionEvent, MemoryEvent, NetworkEvent, NetworkExchange, NetworkMode, PersistenceEvent,
+    ProcessEvent, ProvenanceSinkKind, ProvenanceSourceKind, RegistryEvent, RuntimeFunction,
+    SnapshotEventCounts, SnapshotRegisters, SnapshotStats, SystemEvent, Termination, ThreadEvent,
+    ThreadSummary, TimelineEvent,
     api::normalize_name,
+    artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
     cpu64::Cpu64,
+    generation::{GenerationObservation, GenerationTracker},
     loader::ApiImport,
     loader64::{self, STACK64_TOP},
     memory::Permissions,
     memory64::Memory64,
+    network::NetworkRuntime,
+    provenance::ProvenanceTracker,
+    windows::{HandleResource, VirtualWindows},
 };
 use iced_x86::{Code, Decoder, DecoderOptions, Instruction, Mnemonic};
 use sha2::{Digest, Sha256};
@@ -17,11 +24,22 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const ENTRY64_RETURN_SENTINEL: u64 = 0x0000_006e_ffff_fff0;
 const TLS64_RETURN_SENTINEL: u64 = 0x0000_006e_ffff_ffe0;
+const EXCEPTION64_RETURN_SENTINEL: u64 = 0x0000_006e_ffff_ffd0;
+const THREAD64_RETURN_SENTINEL: u64 = 0x0000_006e_ffff_ffc0;
 const PROCESS_ENV64_BASE: u64 = 0x0000_007e_0000_0000;
 const COMMAND_LINE64_A: u64 = PROCESS_ENV64_BASE;
 const TEB64_BASE: u64 = 0x0000_007f_fde0_0000;
 const PEB64_BASE: u64 = 0x0000_007f_fdf0_0000;
 const HEAP64_BASE: u64 = 0x0000_0050_0000_0000;
+const EXCEPTION64_SCRATCH_BASE: u64 = PROCESS_ENV64_BASE + 0x1000;
+const EXCEPTION64_RECORD_BASE: u64 = EXCEPTION64_SCRATCH_BASE;
+const EXCEPTION64_CONTEXT_BASE: u64 = EXCEPTION64_SCRATCH_BASE + 0x200;
+const MAX_EXCEPTION_EVENTS: usize = 128;
+const MAX_EXCEPTION_DEPTH: usize = 16;
+const MAX_GUEST_THREADS: usize = 64;
+const MAX_THREAD_EVENTS: usize = 4_096;
+const THREAD_QUANTUM: u64 = 100;
+const THREAD_STACK_SIZE: usize = 64 * 1024;
 const MAX_SNAPSHOTS: usize = 256;
 const MAX_DIRTY_REGIONS: usize = 64;
 const SNAPSHOT_SAMPLE: usize = 512;
@@ -66,7 +84,23 @@ pub(crate) fn run(
         .memory
         .write_force(PEB64_BASE + 0x20, &PROCESS_ENV64_BASE.to_le_bytes())?;
 
+    let main_cpu = Cpu64 {
+        rip: loaded.entry_point,
+        gs_base: TEB64_BASE,
+        ..Cpu64::default()
+    };
+    let mut provenance = ProvenanceTracker::default();
+    provenance.source(
+        ProvenanceSourceKind::Sample,
+        "loaded PE64 image",
+        loaded.image_base,
+        loaded.image_size as usize,
+        "loader64",
+        0,
+    );
+
     let environment = options.environment.clone();
+    let network_scenario = options.network_scenario.clone();
     let profile = ExecutionProfile {
         architecture: "x86-64 (64-bit)".into(),
         operating_system: environment.windows_version.clone(),
@@ -76,14 +110,10 @@ pub(crate) fn run(
         trace_limit: options.max_trace_events,
         network_mode: environment.network_mode.description().into(),
         environment: environment.clone(),
-        network_scenario: options.network_scenario.id.clone(),
+        network_scenario: network_scenario.id.clone(),
     };
     let mut machine = Machine64 {
-        cpu: Cpu64 {
-            rip: loaded.entry_point,
-            gs_base: TEB64_BASE,
-            ..Cpu64::default()
-        },
+        cpu: main_cpu.clone(),
         memory: loaded.memory,
         imports: loaded.imports,
         options,
@@ -96,7 +126,13 @@ pub(crate) fn run(
         instructions: Vec::new(),
         api_calls: Vec::new(),
         processes: Vec::new(),
+        filesystem: Vec::new(),
+        registry: Vec::new(),
+        network: Vec::new(),
+        network_exchanges: Vec::new(),
         memory_events: Vec::new(),
+        persistence: Vec::new(),
+        exceptions: Vec::new(),
         timeline: Vec::new(),
         warnings: loaded.warnings,
         termination: None,
@@ -110,11 +146,36 @@ pub(crate) fn run(
         snapshots: Vec::new(),
         snapshots_truncated: false,
         heap_next: HEAP64_BASE,
+        windows: VirtualWindows::default(),
+        network_runtime: NetworkRuntime::new(network_scenario),
+        artifacts: ArtifactStore::default(),
+        generations: GenerationTracker::default(),
+        provenance,
+        vectored_handlers: Vec::new(),
+        pending_exception: None,
+        queued_exception: None,
+        thread_states: vec![GuestThread64 {
+            tid: 1,
+            start_address: loaded.entry_point,
+            parameter: 0,
+            cpu: main_cpu,
+            state: GuestThreadState64::Runnable,
+            instruction_count: 0,
+            exit_code: None,
+        }],
+        thread_events: Vec::new(),
+        current_thread: 0,
+        thread_exit_requested: None,
+        next_thread_switch: THREAD_QUANTUM,
+        system: Vec::new(),
+        unwind_functions: loaded.unwind_functions.clone(),
     };
     machine.start_next_target()?;
     machine.record_snapshot("entry", false);
     machine.execute();
     machine.record_snapshot("final", true);
+    machine.capture_final_artifacts();
+    machine.save_current_thread();
 
     let mut findings = machine.build_findings();
     if !loaded.unwind_functions.is_empty() {
@@ -133,16 +194,9 @@ pub(crate) fn run(
         max_dirty_regions: MAX_DIRTY_REGIONS,
         sampled_bytes_per_region: SNAPSHOT_SAMPLE * 2,
     };
-    let sample_source = ProvenanceSource {
-        id: "source-0001".into(),
-        kind: ProvenanceSourceKind::Sample,
-        label: "loaded PE64 image".into(),
-        address: loaded.image_base,
-        size: loaded.image_size,
-        api: "loader64".into(),
-        instruction: 0,
-        parent_ids: Vec::new(),
-    };
+    let (artifacts, artifact_stats, artifact_blobs) = machine.artifacts.finish();
+    let (payload_generations, generation_stats) = machine.generations.finish();
+    let (provenance_sources, provenance_flows, provenance_stats) = machine.provenance.finish();
     let unwind_count = loaded.unwind_functions.len();
     let report = DynamicReport {
         schema_version: crate::DYNAMIC_SCHEMA_VERSION,
@@ -159,66 +213,50 @@ pub(crate) fn run(
         instructions: machine.instructions,
         api_calls: machine.api_calls,
         processes: machine.processes,
-        filesystem: Vec::new(),
-        registry: Vec::new(),
-        network: Vec::new(),
-        network_exchanges: Vec::new(),
-        provenance_sources: vec![sample_source],
-        provenance_flows: Vec::new(),
-        provenance_stats: ProvenanceStats {
-            source_count: 1,
-            flow_count: 0,
-            tracked_ranges: 1,
-            truncated: false,
-        },
+        filesystem: machine.filesystem,
+        registry: machine.registry,
+        network: machine.network,
+        network_exchanges: machine.network_exchanges,
+        provenance_sources,
+        provenance_flows,
+        provenance_stats,
         snapshots: machine.snapshots,
         snapshot_stats,
-        unwind_functions: loaded.unwind_functions,
+        unwind_functions: machine.unwind_functions,
         memory: machine.memory_events,
         injection: Vec::new(),
-        persistence: Vec::new(),
-        exceptions: Vec::new(),
-        threads: vec![ThreadSummary {
-            tid: 1,
-            start_address: machine.entry_point,
-            parameter: 0,
-            state: "terminated".into(),
-            instruction_count: machine.instruction_count,
-            exit_code: match machine.termination {
-                Some(Termination::ExitProcess { code }) => Some(code),
-                _ => None,
-            },
-        }],
-        thread_events: Vec::new(),
-        system: vec![
-            SystemEvent {
-                category: "loader".into(),
-                operation: "map_teb_peb".into(),
-                target: format!("TEB 0x{TEB64_BASE:016x} / PEB 0x{PEB64_BASE:016x}"),
-                detail: "GS:[0x30] self pointer and GS:[0x60] PEB pointer".into(),
-                result: 1,
-            },
-            SystemEvent {
-                category: "loader".into(),
-                operation: "map_unwind".into(),
-                target: "PE64 exception directory".into(),
-                detail: format!("{unwind_count} bounded runtime functions"),
-                result: unwind_count as u64,
-            },
-        ],
-        artifacts: Vec::new(),
-        artifact_stats: ArtifactStats {
-            count: 0,
-            retained_bytes: 0,
-            truncated: false,
-        },
-        payload_generations: Vec::new(),
-        generation_stats: GenerationStats {
-            count: 0,
-            chains: 0,
-            executed_generations: 0,
-            truncated: false,
-        },
+        persistence: machine.persistence,
+        exceptions: machine.exceptions,
+        threads: machine
+            .thread_states
+            .iter()
+            .map(GuestThread64::summary)
+            .collect(),
+        thread_events: machine.thread_events,
+        system: [
+            vec![
+                SystemEvent {
+                    category: "loader".into(),
+                    operation: "map_teb_peb".into(),
+                    target: format!("TEB 0x{TEB64_BASE:016x} / PEB 0x{PEB64_BASE:016x}"),
+                    detail: "GS:[0x30] self pointer and GS:[0x60] PEB pointer".into(),
+                    result: 1,
+                },
+                SystemEvent {
+                    category: "loader".into(),
+                    operation: "map_unwind".into(),
+                    target: "PE64 exception directory".into(),
+                    detail: format!("{unwind_count} bounded runtime functions"),
+                    result: unwind_count as u64,
+                },
+            ],
+            machine.system,
+        ]
+        .concat(),
+        artifacts,
+        artifact_stats,
+        payload_generations,
+        generation_stats,
         timeline: machine.timeline,
         coverage: ExecutionCoverage {
             unique_instruction_addresses: machine.unique_instruction_addresses.len(),
@@ -237,7 +275,7 @@ pub(crate) fn run(
     };
     Ok(DynamicAnalysis {
         report,
-        artifacts: BTreeMap::new(),
+        artifacts: artifact_blobs,
     })
 }
 
@@ -255,7 +293,13 @@ struct Machine64 {
     instructions: Vec<InstructionEvent>,
     api_calls: Vec<ApiEvent>,
     processes: Vec<ProcessEvent>,
+    filesystem: Vec<FileEvent>,
+    registry: Vec<RegistryEvent>,
+    network: Vec<NetworkEvent>,
+    network_exchanges: Vec<NetworkExchange>,
     memory_events: Vec<MemoryEvent>,
+    persistence: Vec<PersistenceEvent>,
+    exceptions: Vec<ExceptionEvent>,
     timeline: Vec<TimelineEvent>,
     warnings: Vec<String>,
     termination: Option<Termination>,
@@ -269,9 +313,468 @@ struct Machine64 {
     snapshots: Vec<ExecutionSnapshot>,
     snapshots_truncated: bool,
     heap_next: u64,
+    windows: VirtualWindows,
+    network_runtime: NetworkRuntime,
+    artifacts: ArtifactStore,
+    generations: GenerationTracker,
+    provenance: ProvenanceTracker,
+    vectored_handlers: Vec<u64>,
+    pending_exception: Option<PendingException64>,
+    queued_exception: Option<(u32, String)>,
+    thread_states: Vec<GuestThread64>,
+    thread_events: Vec<ThreadEvent>,
+    current_thread: usize,
+    thread_exit_requested: Option<u32>,
+    next_thread_switch: u64,
+    system: Vec<SystemEvent>,
+    unwind_functions: Vec<RuntimeFunction>,
+}
+
+#[derive(Clone)]
+struct GuestThread64 {
+    tid: u32,
+    start_address: u64,
+    parameter: u64,
+    cpu: Cpu64,
+    state: GuestThreadState64,
+    instruction_count: u64,
+    exit_code: Option<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GuestThreadState64 {
+    Runnable,
+    Terminated,
+}
+
+impl GuestThread64 {
+    fn summary(&self) -> ThreadSummary {
+        ThreadSummary {
+            tid: self.tid,
+            start_address: self.start_address,
+            parameter: self.parameter,
+            state: if self.state == GuestThreadState64::Runnable {
+                "runnable"
+            } else {
+                "terminated"
+            }
+            .into(),
+            instruction_count: self.instruction_count,
+            exit_code: self.exit_code,
+        }
+    }
+}
+
+struct PendingException64 {
+    code: u32,
+    name: String,
+    address: u64,
+    resume_rip: u64,
+    depth: usize,
+    fallback: Termination,
+    event_index: usize,
+    vectored_index: usize,
+    saved_cpu: Cpu64,
 }
 
 impl Machine64 {
+    fn save_current_thread(&mut self) {
+        if let Some(thread) = self.thread_states.get_mut(self.current_thread) {
+            thread.cpu = self.cpu.clone();
+        }
+    }
+
+    fn schedule_next_thread(&mut self, record: bool) -> bool {
+        self.save_current_thread();
+        let count = self.thread_states.len();
+        let Some(next) = (1..=count)
+            .map(|offset| (self.current_thread + offset) % count)
+            .find(|index| self.thread_states[*index].state == GuestThreadState64::Runnable)
+        else {
+            return false;
+        };
+        if next != self.current_thread {
+            self.current_thread = next;
+            self.cpu = self.thread_states[next].cpu.clone();
+            if record {
+                self.record_thread_event("scheduled", next);
+            }
+        }
+        true
+    }
+
+    fn finish_current_thread(&mut self, exit_code: u32) {
+        if let Some(thread) = self.thread_states.get_mut(self.current_thread) {
+            thread.cpu = self.cpu.clone();
+            thread.state = GuestThreadState64::Terminated;
+            thread.exit_code = Some(exit_code);
+        }
+        self.record_thread_event("exited", self.current_thread);
+    }
+
+    fn terminate_all_threads(&mut self, exit_code: u32) {
+        self.save_current_thread();
+        let active: Vec<_> = self
+            .thread_states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, thread)| {
+                (thread.state == GuestThreadState64::Runnable).then_some(index)
+            })
+            .collect();
+        for index in active {
+            self.thread_states[index].state = GuestThreadState64::Terminated;
+            self.thread_states[index].exit_code = Some(exit_code);
+            self.record_thread_event("process_exit", index);
+        }
+    }
+
+    fn record_thread_event(&mut self, operation: &str, index: usize) {
+        if self.thread_events.len() >= MAX_THREAD_EVENTS {
+            self.truncated = true;
+            return;
+        }
+        let thread = &self.thread_states[index];
+        self.thread_events.push(ThreadEvent {
+            sequence: self.thread_events.len() as u64,
+            tid: thread.tid,
+            operation: operation.into(),
+            instruction: self.instruction_count,
+            virtual_time_ms: self.virtual_time_ms,
+            start_address: thread.start_address,
+            parameter: thread.parameter,
+        });
+    }
+
+    fn create_guest_thread(&mut self, start_address: u64, parameter: u64) -> u32 {
+        if self.thread_states.len() >= MAX_GUEST_THREADS
+            || self.memory.fetch(start_address, 1).is_err()
+        {
+            return 0;
+        }
+        let tid = self.thread_states.len() as u32 + 1;
+        let stack_base =
+            0x0000_0060_0000_0000u64.saturating_add(u64::from(tid).saturating_mul(0x20_000));
+        let teb_base =
+            0x0000_007f_fdc0_0000u64.saturating_sub(u64::from(tid).saturating_mul(0x2000));
+        if self
+            .memory
+            .map(
+                stack_base,
+                THREAD_STACK_SIZE,
+                Permissions::READ_WRITE,
+                format!("x64 thread {tid} stack"),
+            )
+            .is_err()
+            || self
+                .memory
+                .map(
+                    teb_base,
+                    0x1000,
+                    Permissions::READ_WRITE,
+                    format!("x64 thread {tid} TEB"),
+                )
+                .is_err()
+        {
+            return 0;
+        }
+        let _ = self
+            .memory
+            .write_force(teb_base + 0x30, &teb_base.to_le_bytes());
+        let _ = self
+            .memory
+            .write_force(teb_base + 0x60, &PEB64_BASE.to_le_bytes());
+        let top = stack_base.saturating_add(THREAD_STACK_SIZE as u64);
+        let mut cpu = Cpu64 {
+            rip: start_address,
+            gs_base: teb_base,
+            ..Cpu64::default()
+        };
+        cpu.set_rsp(top);
+        cpu.gpr[5] = top;
+        cpu.gpr[1] = parameter;
+        if cpu
+            .push(&mut self.memory, THREAD64_RETURN_SENTINEL)
+            .is_err()
+        {
+            return 0;
+        }
+        self.thread_states.push(GuestThread64 {
+            tid,
+            start_address,
+            parameter,
+            cpu,
+            state: GuestThreadState64::Runnable,
+            instruction_count: 0,
+            exit_code: None,
+        });
+        let index = self.thread_states.len() - 1;
+        self.record_thread_event("created", index);
+        tid
+    }
+
+    fn dispatch_exception(
+        &mut self,
+        code: u32,
+        name: &str,
+        address: u64,
+        resume_rip: u64,
+        fallback: Termination,
+    ) -> bool {
+        if self.pending_exception.is_some()
+            || self.exceptions.len() >= MAX_EXCEPTION_EVENTS
+            || self.vectored_handlers.is_empty()
+        {
+            return false;
+        }
+        let pending = PendingException64 {
+            code,
+            name: name.into(),
+            address,
+            resume_rip,
+            depth: 0,
+            fallback,
+            event_index: 0,
+            vectored_index: 0,
+            saved_cpu: self.cpu.clone(),
+        };
+        self.begin_exception_handler(pending)
+    }
+
+    fn begin_exception_handler(&mut self, mut pending: PendingException64) -> bool {
+        if pending.depth >= MAX_EXCEPTION_DEPTH {
+            return false;
+        }
+        let Some(handler) = self.vectored_handlers.get(pending.vectored_index).copied() else {
+            return false;
+        };
+        if self.memory.fetch(handler, 1).is_err() {
+            return false;
+        }
+        let pointers = EXCEPTION64_SCRATCH_BASE + 0x3e0;
+        let _ = self
+            .memory
+            .write_force(EXCEPTION64_RECORD_BASE, &pending.code.to_le_bytes());
+        let _ = self.memory.write_force(
+            EXCEPTION64_RECORD_BASE + 0x10,
+            &pending.address.to_le_bytes(),
+        );
+        let _ = self.memory.write_force(
+            EXCEPTION64_CONTEXT_BASE + 0xf8,
+            &pending.resume_rip.to_le_bytes(),
+        );
+        let _ = self.memory.write_force(
+            EXCEPTION64_CONTEXT_BASE + 0x98,
+            &pending.saved_cpu.rsp().to_le_bytes(),
+        );
+        let _ = self
+            .memory
+            .write_force(pointers, &EXCEPTION64_RECORD_BASE.to_le_bytes());
+        let _ = self
+            .memory
+            .write_force(pointers + 8, &EXCEPTION64_CONTEXT_BASE.to_le_bytes());
+        if self
+            .cpu
+            .push(&mut self.memory, EXCEPTION64_RETURN_SENTINEL)
+            .is_err()
+        {
+            return false;
+        }
+        self.cpu.gpr[1] = pointers;
+        let event_index = self.exceptions.len();
+        let runtime = self.unwind_functions.iter().find(|entry| {
+            pending.address >= entry.begin_address && pending.address < entry.end_address
+        });
+        self.exceptions.push(ExceptionEvent {
+            sequence: event_index as u64,
+            code: pending.code,
+            name: pending.name.clone(),
+            address: pending.address,
+            handler: Some(handler),
+            establisher_frame: Some(pending.saved_cpu.rsp()),
+            disposition: None,
+            outcome: if runtime.is_some() {
+                "dispatched_via_vectored_handler_with_runtime_function".into()
+            } else {
+                "dispatched_via_vectored_handler".into()
+            },
+        });
+        self.timeline.push(TimelineEvent {
+            sequence: self.timeline.len() as u64,
+            instruction: self.instruction_count,
+            virtual_time_ms: self.virtual_time_ms,
+            category: "exception".into(),
+            operation: "x64_vectored_dispatch".into(),
+            subject: format!(
+                "{} 0x{:016x} -> 0x{handler:016x}",
+                pending.name, pending.address
+            ),
+            source_api: "x64 exception dispatcher".into(),
+        });
+        if let Some(entry) = runtime {
+            self.system.push(SystemEvent {
+                category: "exception".into(),
+                operation: "runtime_function_lookup".into(),
+                target: format!("0x{:016x}", pending.address),
+                detail: format!(
+                    "matched 0x{:016x}-0x{:016x}, unwind info 0x{:016x}",
+                    entry.begin_address, entry.end_address, entry.unwind_info_address
+                ),
+                result: entry.unwind_info_address,
+            });
+        }
+        pending.event_index = event_index;
+        self.cpu.rip = handler;
+        self.pending_exception = Some(pending);
+        true
+    }
+
+    fn complete_exception_handler(&mut self) {
+        let Some(mut pending) = self.pending_exception.take() else {
+            return;
+        };
+        let disposition = self.cpu.gpr[0] as i32;
+        if let Some(event) = self.exceptions.get_mut(pending.event_index) {
+            event.disposition = Some(disposition);
+        }
+        if disposition == -1 {
+            self.cpu = pending.saved_cpu;
+            self.cpu.rip = pending.resume_rip;
+            if let Some(event) = self.exceptions.get_mut(pending.event_index) {
+                event.outcome = "continued_execution".into();
+            }
+        } else if disposition == 0 && pending.vectored_index + 1 < self.vectored_handlers.len() {
+            if let Some(event) = self.exceptions.get_mut(pending.event_index) {
+                event.outcome = "continued_search".into();
+            }
+            pending.vectored_index += 1;
+            pending.depth += 1;
+            let fallback = pending.fallback.clone();
+            if !self.begin_exception_handler(pending) {
+                self.termination = Some(fallback);
+            }
+        } else {
+            if let Some(event) = self.exceptions.get_mut(pending.event_index) {
+                event.outcome = "unhandled".into();
+            }
+            self.termination = Some(pending.fallback);
+        }
+    }
+
+    fn artifact_origin(
+        &self,
+        api: &str,
+        trigger: &str,
+        address: Option<u64>,
+        path: Option<String>,
+    ) -> ArtifactOrigin {
+        ArtifactOrigin {
+            api: api.into(),
+            instruction: self.instruction_count,
+            virtual_time_ms: self.virtual_time_ms,
+            timeline_sequence: self.timeline.len().checked_sub(1).map(|value| value as u64),
+            trigger: trigger.into(),
+            address,
+            path,
+        }
+    }
+
+    fn capture_memory_region(&mut self, address: u64, trigger: &str, api: &str, force: bool) {
+        let Some((start, name, permissions, executable, bytes, size)) = self
+            .memory
+            .dirty_regions()
+            .find(|region| {
+                address >= region.start
+                    && address < region.start.saturating_add(region.data.len() as u64)
+            })
+            .map(|region| {
+                (
+                    region.start,
+                    region.name.to_owned(),
+                    region.permissions.display(),
+                    region.permissions.execute,
+                    region.data[..region.data.len().min(MAX_ARTIFACT_BYTES)].to_vec(),
+                    region.data.len() as u64,
+                )
+            })
+        else {
+            return;
+        };
+        let origin = self.artifact_origin(api, trigger, Some(start), None);
+        let kind = if executable {
+            ArtifactKind::Memory
+        } else {
+            ArtifactKind::Configuration
+        };
+        let entry_point_overwrite = self.memory.was_written(self.entry_point)
+            && self.entry_point >= start
+            && self.entry_point < start + size;
+        if let Some(artifact_id) = self.artifacts.capture(
+            ArtifactCapture {
+                kind,
+                name,
+                trigger,
+                address: Some(start),
+                path: None,
+                permissions: Some(permissions.clone()),
+                force,
+            },
+            &bytes,
+            origin,
+        ) && (executable || entry_point_overwrite)
+        {
+            self.generations.observe(GenerationObservation {
+                artifact_id,
+                region_base: start,
+                size,
+                instruction: self.instruction_count,
+                virtual_time_ms: self.virtual_time_ms,
+                trigger,
+                permissions,
+                executed: trigger == "dynamic_execution",
+                entry_point_overwrite,
+                executable_heap: start >= HEAP64_BASE && executable,
+            });
+        }
+    }
+
+    fn capture_final_artifacts(&mut self) {
+        let regions: Vec<_> = self
+            .memory
+            .dirty_regions()
+            .map(|region| region.start)
+            .collect();
+        for address in regions {
+            self.capture_memory_region(address, "final_dirty_region", "finalize", false);
+        }
+        let files: Vec<_> = self
+            .windows
+            .file_snapshots()
+            .map(|(path, bytes)| (path.to_owned(), bytes.to_vec()))
+            .collect();
+        for (path, bytes) in files {
+            let origin = self.artifact_origin(
+                "virtual_filesystem",
+                "virtual_file",
+                None,
+                Some(path.clone()),
+            );
+            self.artifacts.capture(
+                ArtifactCapture {
+                    kind: ArtifactKind::VirtualFile,
+                    name: path.clone(),
+                    trigger: "virtual_file",
+                    address: None,
+                    path: Some(path),
+                    permissions: None,
+                    force: true,
+                },
+                &bytes,
+                origin,
+            );
+        }
+    }
+
     fn start_next_target(&mut self) -> Result<(), DynamicError> {
         self.cpu.set_rsp(STACK64_TOP);
         self.cpu.gpr[5] = STACK64_TOP;
@@ -290,14 +793,33 @@ impl Machine64 {
 
     fn execute(&mut self) {
         while self.termination.is_none() && self.instruction_count < self.options.max_instructions {
+            if self.pending_exception.is_none() && self.instruction_count >= self.next_thread_switch
+            {
+                self.schedule_next_thread(true);
+                self.next_thread_switch = self.next_thread_switch.saturating_add(THREAD_QUANTUM);
+            }
+            if self.cpu.rip == THREAD64_RETURN_SENTINEL {
+                self.finish_current_thread(self.cpu.gpr[0] as u32);
+                if !self.schedule_next_thread(false) {
+                    self.termination = Some(Termination::ReturnedFromEntryPoint);
+                }
+                continue;
+            }
             if self.cpu.rip == ENTRY64_RETURN_SENTINEL {
-                self.termination = Some(Termination::ReturnedFromEntryPoint);
-                break;
+                self.finish_current_thread(self.cpu.gpr[0] as u32);
+                if !self.schedule_next_thread(false) {
+                    self.termination = Some(Termination::ReturnedFromEntryPoint);
+                }
+                continue;
             }
             if self.cpu.rip == TLS64_RETURN_SENTINEL {
                 if let Err(error) = self.start_next_target() {
                     self.termination = Some(memory_termination(error, "TLS callback"));
                 }
+                continue;
+            }
+            if self.cpu.rip == EXCEPTION64_RETURN_SENTINEL {
+                self.complete_exception_handler();
                 continue;
             }
             if let Some(import) = self.imports.get(&self.cpu.rip).cloned() {
@@ -312,12 +834,23 @@ impl Machine64 {
                 continue;
             }
             let address = self.cpu.rip;
+            self.capture_memory_region(address, "dynamic_execution", "instruction", false);
             self.unique_instruction_addresses.insert(address);
             let bytes = match self.memory.fetch(address, 15) {
                 Ok(bytes) => bytes.to_vec(),
                 Err(error) => {
-                    self.termination = Some(memory_termination(error, "x64 execute"));
-                    break;
+                    let fallback = memory_termination(error, "x64 execute");
+                    if !self.dispatch_exception(
+                        0xc000_0005,
+                        "access_violation",
+                        address,
+                        address,
+                        fallback.clone(),
+                    ) {
+                        self.termination = Some(fallback);
+                        break;
+                    }
+                    continue;
                 }
             };
             let mut decoder = Decoder::with_ip(64, &bytes, address, DecoderOptions::NONE);
@@ -330,8 +863,18 @@ impl Machine64 {
                     bytes: hex::encode(&bytes),
                     nearby_trace: self.instructions.iter().rev().take(4).cloned().collect(),
                 });
-                self.termination = Some(Termination::InvalidInstruction { address });
-                break;
+                let fallback = Termination::InvalidInstruction { address };
+                if !self.dispatch_exception(
+                    0xc000_001d,
+                    "illegal_instruction",
+                    address,
+                    address.wrapping_add(1),
+                    fallback.clone(),
+                ) {
+                    self.termination = Some(fallback);
+                    break;
+                }
+                continue;
             }
             let length = instruction.len().min(bytes.len());
             if self.instructions.len() < self.options.max_trace_events {
@@ -346,6 +889,9 @@ impl Machine64 {
             }
             self.cpu.rip = instruction.next_ip();
             self.instruction_count += 1;
+            if let Some(thread) = self.thread_states.get_mut(self.current_thread) {
+                thread.instruction_count = thread.instruction_count.saturating_add(1);
+            }
             if let Err(error) = self.execute_instruction(&instruction) {
                 self.warnings.push(error.to_string());
                 self.first_unsupported.get_or_insert(InstructionDiagnostic {
@@ -354,7 +900,7 @@ impl Machine64 {
                     bytes: hex::encode(&bytes[..length]),
                     nearby_trace: self.instructions.iter().rev().take(4).cloned().collect(),
                 });
-                self.termination = Some(match error {
+                let fallback = match error {
                     DynamicError::MemoryRead { .. }
                     | DynamicError::MemoryWrite { .. }
                     | DynamicError::MemoryExecute { .. } => {
@@ -364,7 +910,15 @@ impl Machine64 {
                         address,
                         instruction: instruction.to_string(),
                     },
-                });
+                };
+                let (code, name) = if matches!(fallback, Termination::MemoryFault { .. }) {
+                    (0xc000_0005, "access_violation")
+                } else {
+                    (0xc000_001d, "illegal_instruction")
+                };
+                if !self.dispatch_exception(code, name, address, self.cpu.rip, fallback.clone()) {
+                    self.termination = Some(fallback);
+                }
             }
         }
         if self.termination.is_none() {
@@ -507,7 +1061,20 @@ impl Machine64 {
                     .write_register(iced_x86::Register::EDX, value.into())?;
             }
             Nop | Endbr64 => {}
-            Int3 | Hlt => self.termination = Some(Termination::Halted),
+            Int3 => {
+                let address = instruction.ip();
+                let fallback = Termination::Halted;
+                if !self.dispatch_exception(
+                    0x8000_0003,
+                    "breakpoint",
+                    address,
+                    self.cpu.rip,
+                    fallback.clone(),
+                ) {
+                    self.termination = Some(fallback);
+                }
+            }
+            Hlt => self.termination = Some(Termination::Halted),
             _ => {
                 return Err(DynamicError::UnsupportedOperand(format!(
                     "x64 {}",
@@ -559,6 +1126,22 @@ impl Machine64 {
                 | "createprocessa"
                 | "virtualalloc"
                 | "virtualprotect"
+                | "closehandle"
+                | "createfilea"
+                | "writefile"
+                | "readfile"
+                | "regopenkeyexa"
+                | "regcreatekeyexa"
+                | "regsetvalueexa"
+                | "regqueryvalueexa"
+                | "internetopena"
+                | "internetopenurla"
+                | "internetreadfile"
+                | "createthread"
+                | "exitthread"
+                | "addvectoredexceptionhandler"
+                | "removevectoredexceptionhandler"
+                | "raiseexception"
                 | "exitprocess"
         );
         if supported {
@@ -593,7 +1176,11 @@ impl Machine64 {
                 "pid 1337".into(),
             ),
             "getcurrentthreadid" => (
-                1,
+                u64::from(
+                    self.thread_states
+                        .get(self.current_thread)
+                        .map_or(1, |thread| thread.tid),
+                ),
                 "Returned synthetic thread ID".into(),
                 "thread".into(),
                 "query".into(),
@@ -627,6 +1214,14 @@ impl Machine64 {
             "winexec" => {
                 let pointer = args.first().copied().unwrap_or(0);
                 let command = self.memory.read_c_string(pointer, 2_048);
+                self.provenance.observe(
+                    pointer,
+                    command.len(),
+                    ProvenanceSinkKind::ProcessCommand,
+                    command.clone(),
+                    "WinExec",
+                    self.instruction_count,
+                );
                 self.processes.push(ProcessEvent {
                     operation: "execute".into(),
                     command: command.clone(),
@@ -647,6 +1242,14 @@ impl Machine64 {
                     .filter(|value| *value != 0)
                     .unwrap_or_else(|| args.first().copied().unwrap_or(0));
                 let command = self.memory.read_c_string(pointer, 2_048);
+                self.provenance.observe(
+                    pointer,
+                    command.len(),
+                    ProvenanceSinkKind::ProcessCommand,
+                    command.clone(),
+                    "CreateProcessA",
+                    self.instruction_count,
+                );
                 self.processes.push(ProcessEvent {
                     operation: "create".into(),
                     command: command.clone(),
@@ -711,6 +1314,22 @@ impl Machine64 {
                         size: size as u32,
                         permissions: permissions.display(),
                     });
+                    if permissions.execute {
+                        self.provenance.observe(
+                            address,
+                            size,
+                            ProvenanceSinkKind::ExecutableMemory,
+                            format!("0x{address:016x}"),
+                            "VirtualProtect",
+                            self.instruction_count,
+                        );
+                        self.capture_memory_region(
+                            address,
+                            "executable_transition",
+                            "VirtualProtect",
+                            true,
+                        );
+                    }
                 }
                 (
                     u64::from(ok),
@@ -720,8 +1339,464 @@ impl Machine64 {
                     format!("0x{address:016x}"),
                 )
             }
+            "closehandle" => {
+                let handle = args.first().copied().unwrap_or(0) as u32;
+                self.network_runtime.close(handle);
+                let closed = self.windows.close(handle);
+                (
+                    u64::from(closed),
+                    format!("Closed synthetic handle 0x{handle:08x}"),
+                    "handle".into(),
+                    "close".into(),
+                    format!("0x{handle:08x}"),
+                )
+            }
+            "createfilea" => {
+                let path = self
+                    .memory
+                    .read_c_string(args.first().copied().unwrap_or(0), 1_024);
+                let handle = self.windows.open_file(path.clone()).unwrap_or(0);
+                self.filesystem.push(FileEvent {
+                    operation: "open".into(),
+                    path: path.clone(),
+                    size: None,
+                    preview: None,
+                });
+                (
+                    u64::from(handle),
+                    format!("Opened virtual file {path}"),
+                    "filesystem".into(),
+                    "open".into(),
+                    path,
+                )
+            }
+            "writefile" => {
+                let handle = args.first().copied().unwrap_or(0) as u32;
+                let pointer = args.get(1).copied().unwrap_or(0);
+                let requested = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let bytes = self
+                    .memory
+                    .read(pointer, requested)
+                    .unwrap_or_default()
+                    .to_vec();
+                let path = self
+                    .windows
+                    .file_path(handle)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let written = self.windows.write_file(handle, &bytes);
+                if let Some(output) = args.get(3).copied().filter(|value| *value != 0) {
+                    let _ = self.memory.write(output, &(written as u32).to_le_bytes());
+                }
+                self.provenance.observe(
+                    pointer,
+                    written,
+                    ProvenanceSinkKind::VirtualFile,
+                    path.clone(),
+                    "WriteFile",
+                    self.instruction_count,
+                );
+                self.filesystem.push(FileEvent {
+                    operation: "write".into(),
+                    path: path.clone(),
+                    size: Some(written as u32),
+                    preview: Some(preview_bytes(&bytes[..written.min(bytes.len())])),
+                });
+                (
+                    u64::from(written != 0),
+                    format!("Wrote {written} bytes to virtual file {path}"),
+                    "filesystem".into(),
+                    "write".into(),
+                    path,
+                )
+            }
+            "readfile" => {
+                let handle = args.first().copied().unwrap_or(0) as u32;
+                let output = args.get(1).copied().unwrap_or(0);
+                let requested = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let path = self
+                    .windows
+                    .file_path(handle)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let bytes = self.windows.read_file(handle, requested);
+                let _ = self.memory.write(output, &bytes);
+                if let Some(count) = args.get(3).copied().filter(|value| *value != 0) {
+                    let _ = self
+                        .memory
+                        .write(count, &(bytes.len() as u32).to_le_bytes());
+                }
+                if !bytes.is_empty() {
+                    self.provenance.source(
+                        ProvenanceSourceKind::VirtualFile,
+                        path.clone(),
+                        output,
+                        bytes.len(),
+                        "ReadFile",
+                        self.instruction_count,
+                    );
+                }
+                self.filesystem.push(FileEvent {
+                    operation: "read".into(),
+                    path: path.clone(),
+                    size: Some(bytes.len() as u32),
+                    preview: Some(preview_bytes(&bytes)),
+                });
+                (
+                    1,
+                    format!("Read {} bytes from virtual file {path}", bytes.len()),
+                    "filesystem".into(),
+                    "read".into(),
+                    path,
+                )
+            }
+            "regopenkeyexa" | "regcreatekeyexa" => {
+                let subkey = self
+                    .memory
+                    .read_c_string(args.get(1).copied().unwrap_or(0), 1_024);
+                let key = format!("HKCU\\{subkey}");
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Registry { key: key.clone() })
+                    .unwrap_or(0);
+                let output_index = if name == "regcreatekeyexa" { 7 } else { 4 };
+                if let Some(output) = args.get(output_index).copied().filter(|value| *value != 0) {
+                    let _ = self.memory.write(output, &handle.to_le_bytes());
+                }
+                self.registry.push(RegistryEvent {
+                    operation: "open".into(),
+                    key: key.clone(),
+                    value: None,
+                });
+                (
+                    0,
+                    format!("Opened synthetic registry key {key}"),
+                    "registry".into(),
+                    "open".into(),
+                    key,
+                )
+            }
+            "regsetvalueexa" => {
+                let handle = args.first().copied().unwrap_or(0) as u32;
+                let value_name = self
+                    .memory
+                    .read_c_string(args.get(1).copied().unwrap_or(0), 512);
+                let pointer = args.get(4).copied().unwrap_or(0);
+                let size = args.get(5).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let bytes = self.memory.read(pointer, size).unwrap_or_default().to_vec();
+                let key = self
+                    .windows
+                    .registry_path(handle)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let ok = self.windows.set_registry_value(handle, &value_name, &bytes);
+                let target = format!("{key}\\{value_name}");
+                self.provenance.observe(
+                    pointer,
+                    bytes.len(),
+                    ProvenanceSinkKind::Persistence,
+                    target.clone(),
+                    "RegSetValueExA",
+                    self.instruction_count,
+                );
+                self.registry.push(RegistryEvent {
+                    operation: "set".into(),
+                    key: target.clone(),
+                    value: Some(preview_bytes(&bytes)),
+                });
+                if key.to_ascii_lowercase().contains("currentversion\\run") {
+                    self.persistence.push(PersistenceEvent {
+                        mechanism: "registry_run_key".into(),
+                        operation: "set".into(),
+                        target: target.clone(),
+                        value: Some(preview_bytes(&bytes)),
+                    });
+                }
+                (
+                    if ok { 0 } else { 6 },
+                    format!("Set synthetic registry value {target}"),
+                    "registry".into(),
+                    "set".into(),
+                    target,
+                )
+            }
+            "regqueryvalueexa" => {
+                let handle = args.first().copied().unwrap_or(0) as u32;
+                let value_name = self
+                    .memory
+                    .read_c_string(args.get(1).copied().unwrap_or(0), 512);
+                let output = args.get(4).copied().unwrap_or(0);
+                let size_pointer = args.get(5).copied().unwrap_or(0);
+                let bytes = self
+                    .windows
+                    .registry_value(handle, &value_name)
+                    .unwrap_or_default()
+                    .to_vec();
+                let _ = self.memory.write(output, &bytes);
+                if size_pointer != 0 {
+                    let _ = self
+                        .memory
+                        .write(size_pointer, &(bytes.len() as u32).to_le_bytes());
+                }
+                let key = self
+                    .windows
+                    .registry_path(handle)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                if !bytes.is_empty() {
+                    self.provenance.source(
+                        ProvenanceSourceKind::Registry,
+                        format!("{key}\\{value_name}"),
+                        output,
+                        bytes.len(),
+                        "RegQueryValueExA",
+                        self.instruction_count,
+                    );
+                }
+                self.registry.push(RegistryEvent {
+                    operation: "query".into(),
+                    key: key.clone(),
+                    value: Some(value_name.clone()),
+                });
+                (
+                    if bytes.is_empty() { 2 } else { 0 },
+                    format!("Queried synthetic registry value {key}\\{value_name}"),
+                    "registry".into(),
+                    "query".into(),
+                    key,
+                )
+            }
+            "internetopena" => {
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Internet {
+                        label: "WinINet session".into(),
+                    })
+                    .unwrap_or(0);
+                self.network_runtime.register_session(handle);
+                (
+                    u64::from(handle),
+                    "Opened deterministic WinINet session".into(),
+                    "network".into(),
+                    "session".into(),
+                    self.network_runtime.scenario_id().into(),
+                )
+            }
+            "internetopenurla" => {
+                let url = self
+                    .memory
+                    .read_c_string(args.get(1).copied().unwrap_or(0), 2_048);
+                if self.environment.network_mode == NetworkMode::Offline {
+                    (
+                        0,
+                        format!("Blocked synthetic request to {url} in offline profile"),
+                        "network".into(),
+                        "blocked".into(),
+                        url,
+                    )
+                } else {
+                    let handle = self
+                        .windows
+                        .allocate(HandleResource::Internet { label: url.clone() })
+                        .unwrap_or(0);
+                    self.network_runtime
+                        .register_request(handle, "GET".into(), url.clone());
+                    let hops = self.network_runtime.resolve_request(handle);
+                    for hop in hops {
+                        self.network_exchanges.push(NetworkExchange {
+                            sequence: self.network_exchanges.len() as u64,
+                            protocol: "http".into(),
+                            operation: "GET".into(),
+                            destination: hop.url,
+                            request_headers: Vec::new(),
+                            request_preview: None,
+                            request_size: 0,
+                            request_sha256: None,
+                            response_status: Some(hop.status),
+                            response_headers: hop.headers,
+                            response_size: hop.body.len() as u64,
+                            response_sha256: Some(hex::encode(Sha256::digest(&hop.body))),
+                            artifact_id: None,
+                            outcome: if hop.redirected {
+                                "redirect"
+                            } else {
+                                "scripted"
+                            }
+                            .into(),
+                        });
+                    }
+                    self.network.push(NetworkEvent {
+                        operation: "request".into(),
+                        destination: url.clone(),
+                        size: None,
+                        preview: None,
+                        synthetic_result:
+                            "Resolved from deterministic scenario; no host network used".into(),
+                    });
+                    (
+                        u64::from(handle),
+                        format!("Opened deterministic URL {url}"),
+                        "network".into(),
+                        "request".into(),
+                        url,
+                    )
+                }
+            }
+            "internetreadfile" => {
+                let handle = args.first().copied().unwrap_or(0) as u32;
+                let output = args.get(1).copied().unwrap_or(0);
+                let maximum = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let bytes = self
+                    .network_runtime
+                    .read_response(handle, maximum)
+                    .unwrap_or_default();
+                let _ = self.memory.write(output, &bytes);
+                if let Some(count) = args.get(3).copied().filter(|value| *value != 0) {
+                    let _ = self
+                        .memory
+                        .write(count, &(bytes.len() as u32).to_le_bytes());
+                }
+                let destination = self
+                    .windows
+                    .describe(handle)
+                    .unwrap_or_else(|| "scripted response".into());
+                if !bytes.is_empty() {
+                    self.provenance.source(
+                        ProvenanceSourceKind::Network,
+                        destination.clone(),
+                        output,
+                        bytes.len(),
+                        "InternetReadFile",
+                        self.instruction_count,
+                    );
+                    let origin = self.artifact_origin(
+                        "InternetReadFile",
+                        "network_download",
+                        Some(output),
+                        None,
+                    );
+                    let artifact_id = self.artifacts.capture(
+                        ArtifactCapture {
+                            kind: ArtifactKind::NetworkDownload,
+                            name: "wininet-response.bin".into(),
+                            trigger: "network_download",
+                            address: Some(output),
+                            path: None,
+                            permissions: None,
+                            force: true,
+                        },
+                        &bytes,
+                        origin,
+                    );
+                    if let Some(exchange) = self.network_exchanges.last_mut() {
+                        exchange.artifact_id = artifact_id;
+                    }
+                }
+                self.network.push(NetworkEvent {
+                    operation: "read".into(),
+                    destination: destination.clone(),
+                    size: Some(bytes.len() as u32),
+                    preview: Some(preview_bytes(&bytes)),
+                    synthetic_result: "Returned scripted bytes only".into(),
+                });
+                (
+                    1,
+                    format!("Read {} deterministic network bytes", bytes.len()),
+                    "network".into(),
+                    "read".into(),
+                    destination,
+                )
+            }
+            "createthread" => {
+                let start = args.get(2).copied().unwrap_or(0);
+                let parameter = args.get(3).copied().unwrap_or(0);
+                let tid = self.create_guest_thread(start, parameter);
+                if let Some(pointer) = args.get(5).copied().filter(|value| *value != 0) {
+                    let _ = self.memory.write(pointer, &tid.to_le_bytes());
+                }
+                let handle = if tid == 0 {
+                    0
+                } else {
+                    self.windows
+                        .allocate(HandleResource::Thread { tid })
+                        .unwrap_or(0)
+                };
+                (
+                    u64::from(handle),
+                    format!("Created deterministic x64 guest thread {tid} at 0x{start:016x}"),
+                    "thread".into(),
+                    "create".into(),
+                    tid.to_string(),
+                )
+            }
+            "exitthread" => {
+                let code = args.first().copied().unwrap_or(0) as u32;
+                self.thread_exit_requested = Some(code);
+                (
+                    0,
+                    format!("Thread requested exit with code {code}"),
+                    "thread".into(),
+                    "exit".into(),
+                    code.to_string(),
+                )
+            }
+            "addvectoredexceptionhandler" => {
+                let first = args.first().copied().unwrap_or(0) != 0;
+                let handler = args.get(1).copied().unwrap_or(0);
+                let valid = handler != 0
+                    && self.memory.fetch(handler, 1).is_ok()
+                    && self.vectored_handlers.len() < MAX_EXCEPTION_DEPTH;
+                if valid {
+                    if first {
+                        self.vectored_handlers.insert(0, handler);
+                    } else {
+                        self.vectored_handlers.push(handler);
+                    }
+                }
+                (
+                    if valid { handler } else { 0 },
+                    format!(
+                        "{} x64 vectored handler 0x{handler:016x}",
+                        if valid { "Registered" } else { "Rejected" }
+                    ),
+                    "exception".into(),
+                    "register_handler".into(),
+                    format!("0x{handler:016x}"),
+                )
+            }
+            "removevectoredexceptionhandler" => {
+                let handler = args.first().copied().unwrap_or(0);
+                let removed = self
+                    .vectored_handlers
+                    .iter()
+                    .position(|value| *value == handler)
+                    .map(|index| self.vectored_handlers.remove(index))
+                    .is_some();
+                (
+                    u64::from(removed),
+                    format!(
+                        "{} x64 vectored handler 0x{handler:016x}",
+                        if removed { "Removed" } else { "Did not find" }
+                    ),
+                    "exception".into(),
+                    "remove_handler".into(),
+                    format!("0x{handler:016x}"),
+                )
+            }
+            "raiseexception" => {
+                let code = args.first().copied().unwrap_or(0xe000_0001) as u32;
+                self.queued_exception = Some((code, "raised_exception".into()));
+                (
+                    0,
+                    format!("Queued deterministic x64 exception 0x{code:08x}"),
+                    "exception".into(),
+                    "raise".into(),
+                    format!("0x{code:08x}"),
+                )
+            }
             "exitprocess" => {
                 let code = args.first().copied().unwrap_or(0) as u32;
+                self.terminate_all_threads(code);
                 self.termination = Some(Termination::ExitProcess { code });
                 (
                     0,
@@ -760,6 +1835,27 @@ impl Machine64 {
             source_api: import.name.clone(),
         });
         self.record_snapshot(format!("api:{}", import.name), false);
+        if let Some(code) = self.thread_exit_requested.take() {
+            self.finish_current_thread(code);
+            if !self.schedule_next_thread(false) {
+                self.termination = Some(Termination::ReturnedFromEntryPoint);
+            }
+        }
+        if let Some((code, exception_name)) = self.queued_exception.take() {
+            let fallback = Termination::MemoryFault {
+                address: return_address,
+                operation: format!("unhandled x64 exception 0x{code:08x}"),
+            };
+            if !self.dispatch_exception(
+                code,
+                &exception_name,
+                return_address,
+                self.cpu.rip,
+                fallback.clone(),
+            ) {
+                self.termination = Some(fallback);
+            }
+        }
         Ok(())
     }
 
@@ -772,17 +1868,22 @@ impl Machine64 {
             self.snapshots.pop();
             self.snapshots_truncated = true;
         }
-        let behavior = self.processes.len() + self.memory_events.len();
+        let behavior = self.processes.len()
+            + self.filesystem.len()
+            + self.registry.len()
+            + self.network.len()
+            + self.memory_events.len()
+            + self.persistence.len();
         let events = SnapshotEventCounts {
             api_calls: self.api_calls.len(),
             processes: self.processes.len(),
-            filesystem: 0,
-            registry: 0,
-            network: 0,
+            filesystem: self.filesystem.len(),
+            registry: self.registry.len(),
+            network: self.network.len(),
             memory: self.memory_events.len(),
             injection: 0,
-            persistence: 0,
-            provenance_flows: 0,
+            persistence: self.persistence.len(),
+            provenance_flows: self.provenance.flow_count(),
         };
         let registers = SnapshotRegisters {
             rax: self.cpu.gpr[0],
@@ -888,6 +1989,19 @@ fn protection64(value: u32) -> Permissions {
         write: matches!(value, 0x04 | 0x08 | 0x40 | 0x80),
         execute: matches!(value, 0x10 | 0x20 | 0x40 | 0x80),
     }
+}
+
+fn preview_bytes(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(160)])
+        .chars()
+        .map(|character| {
+            if character.is_control() && !matches!(character, '\n' | '\r' | '\t') {
+                '.'
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 fn memory_termination(error: DynamicError, operation: &str) -> Termination {

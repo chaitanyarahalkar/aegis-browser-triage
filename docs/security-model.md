@@ -84,9 +84,11 @@ Dynamic analysis:
   register arguments, 32-byte shadow space, and bounded stack arguments. Reported
   fixture addresses remain below JavaScript's exact-integer ceiling
 - PE64 exception-directory parsing retains at most 4,096 `RUNTIME_FUNCTION`
-  records. Metadata is reported, but full x64 language-specific unwinding is not executed
-- Guest SEH chains dispatch at most 16 handlers per exception and retain at most 128
-  exception events; records and contexts live only in synthetic guest memory
+  records. Vectored exception dispatch records the matching runtime function when
+  present, but full x64 language-specific unwinding is not executed
+- Guest x86 SEH and x64 vectored dispatch visit at most 16 handlers per exception
+  and retain at most 128 exception events; records and contexts live only in
+  synthetic guest memory
 - Guest scheduling is limited to 64 threads and 4,096 scheduler events. It is
   cooperative and deterministic; no sample instruction creates a browser or host thread
 - Dynamic symbol resolution creates emulator-owned API stubs only; resolved
@@ -147,10 +149,13 @@ or runtime-downloaded behavior may be missed. The current interpreter is not a
 complete x86 CPU or Windows implementation; a sample can evade or simply exceed
 its supported surface.
 
-PE64 support currently covers core integer, memory, control-flow, RIP-relative,
-and Microsoft x64 ABI behavior plus a conservative Windows API subset. The broader
-PE32 synthetic API, guest-thread, SEH, artifact, and provenance surface is not yet
-at feature parity on x64; unsupported paths terminate with structured diagnostics.
+PE64 support covers core integer, memory, control-flow, RIP-relative, and Microsoft
+x64 ABI behavior plus the milestone parity surfaces for runtime artifacts and
+payload generations, synthetic files/registry/scripted WinINet, API-level
+provenance, deterministic guest threads, and bounded vectored exception dispatch.
+It does not duplicate every PE32 API model, x86 `FS:[0]` SEH chain, or full Windows
+x64 language-specific unwinding; unsupported paths terminate with structured
+diagnostics.
 
 Provenance is intentionally API-level and follows modeled range writes, copies,
 conversions, and crypto outputs. It is not whole-CPU taint propagation or symbolic

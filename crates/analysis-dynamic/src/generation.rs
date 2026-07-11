@@ -6,13 +6,13 @@ pub const MAX_GENERATIONS: usize = 256;
 #[derive(Debug, Default)]
 pub struct GenerationTracker {
     generations: Vec<PayloadGeneration>,
-    current_by_region: BTreeMap<u32, usize>,
+    current_by_region: BTreeMap<u64, usize>,
     truncated: bool,
 }
 
 pub struct GenerationObservation<'a> {
     pub artifact_id: String,
-    pub region_base: u32,
+    pub region_base: u64,
     pub size: u64,
     pub instruction: u64,
     pub virtual_time_ms: u64,
@@ -55,7 +55,7 @@ impl GenerationTracker {
             sequence,
             parent_id,
             artifact_id: observation.artifact_id,
-            region_base: observation.region_base.into(),
+            region_base: observation.region_base,
             size: observation.size,
             capture_instruction: observation.instruction,
             virtual_time_ms: observation.virtual_time_ms,
@@ -97,7 +97,7 @@ mod tests {
     fn observation(id: &str, executed: bool) -> GenerationObservation<'_> {
         GenerationObservation {
             artifact_id: id.into(),
-            region_base: 0x1000,
+            region_base: 0x0000_0001_4000_1000,
             size: 4096,
             instruction: 10,
             virtual_time_ms: 20,
@@ -123,5 +123,6 @@ mod tests {
             Some(generations[0].id.as_str())
         );
         assert_eq!(stats.chains, 1);
+        assert_eq!(generations[0].region_base, 0x0000_0001_4000_1000);
     }
 }

@@ -176,6 +176,19 @@ export default function App() {
     }
   }, [inspectFile])
 
+  const analyzePe64ParityDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-parity-pe64.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Safe PE64 parity fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Safe PE64 parity fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
   const analyzeArtifactDemo = useCallback(async () => {
     try {
       const name = 'aegis-safe-runtime-artifact-pe32.exe'
@@ -382,6 +395,7 @@ export default function App() {
               inspectFile={inspectFile}
               analyzeDemo={analyzeDemo}
               analyzePe64Demo={analyzePe64Demo}
+              analyzePe64ParityDemo={analyzePe64ParityDemo}
               analyzeArtifactDemo={analyzeArtifactDemo}
               analyzeSehDemo={analyzeSehDemo}
               analyzeThreadsDemo={analyzeThreadsDemo}
@@ -455,13 +469,14 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzePe64ParityDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
   inspectFile: (file: File) => Promise<void>
   analyzeDemo: () => Promise<void>
   analyzePe64Demo: () => Promise<void>
+  analyzePe64ParityDemo: () => Promise<void>
   analyzeArtifactDemo: () => Promise<void>
   analyzeSehDemo: () => Promise<void>
   analyzeThreadsDemo: () => Promise<void>
@@ -490,6 +505,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
         <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzePe64Demo()}>Use safe PE64 demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzePe64ParityDemo()}>Use PE64 parity demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeSehDemo()}>Use SEH demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeThreadsDemo()}>Use threads demo</button>

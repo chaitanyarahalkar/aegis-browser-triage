@@ -10,8 +10,8 @@ const MAX_LABELS_PER_RANGE: usize = 8;
 
 #[derive(Debug, Clone)]
 struct TaintRange {
-    start: u32,
-    end: u32,
+    start: u64,
+    end: u64,
     labels: Vec<String>,
 }
 
@@ -48,7 +48,7 @@ impl ProvenanceTracker {
         &mut self,
         kind: ProvenanceSourceKind,
         label: impl Into<String>,
-        address: u32,
+        address: u64,
         size: usize,
         api: impl Into<String>,
         instruction: u64,
@@ -58,8 +58,8 @@ impl ProvenanceTracker {
 
     pub fn derive(
         &mut self,
-        source_address: u32,
-        destination: u32,
+        source_address: u64,
+        destination: u64,
         size: usize,
         label: impl Into<String>,
         api: impl Into<String>,
@@ -79,9 +79,9 @@ impl ProvenanceTracker {
     #[allow(clippy::too_many_arguments)]
     pub fn derive_sized(
         &mut self,
-        source_address: u32,
+        source_address: u64,
         source_size: usize,
-        destination: u32,
+        destination: u64,
         destination_size: usize,
         label: impl Into<String>,
         api: impl Into<String>,
@@ -99,7 +99,7 @@ impl ProvenanceTracker {
         )
     }
 
-    pub fn propagate(&mut self, source: u32, destination: u32, size: usize) {
+    pub fn propagate(&mut self, source: u64, destination: u64, size: usize) {
         if size == 0 {
             return;
         }
@@ -107,13 +107,13 @@ impl ProvenanceTracker {
         self.replace_range(destination, size, labels);
     }
 
-    pub fn clear(&mut self, address: u32, size: usize) {
+    pub fn clear(&mut self, address: u64, size: usize) {
         self.replace_range(address, size, Vec::new());
     }
 
     pub fn observe(
         &mut self,
-        address: u32,
+        address: u64,
         size: usize,
         sink: ProvenanceSinkKind,
         destination: impl Into<String>,
@@ -133,7 +133,7 @@ impl ProvenanceTracker {
             source_ids,
             sink,
             destination: destination.into(),
-            address: address.into(),
+            address,
             size: size as u64,
             api: api.into(),
             instruction,
@@ -155,7 +155,7 @@ impl ProvenanceTracker {
         &mut self,
         kind: ProvenanceSourceKind,
         label: impl Into<String>,
-        address: u32,
+        address: u64,
         size: usize,
         api: impl Into<String>,
         instruction: u64,
@@ -173,7 +173,7 @@ impl ProvenanceTracker {
             id: id.clone(),
             kind,
             label: label.into(),
-            address: address.into(),
+            address,
             size: size as u64,
             api: api.into(),
             instruction,
@@ -183,8 +183,8 @@ impl ProvenanceTracker {
         Some(id)
     }
 
-    fn labels_for(&self, address: u32, size: usize) -> Vec<String> {
-        let Some(end) = address.checked_add(size as u32) else {
+    fn labels_for(&self, address: u64, size: usize) -> Vec<String> {
+        let Some(end) = address.checked_add(size as u64) else {
             return Vec::new();
         };
         let mut labels = BTreeSet::new();
@@ -199,8 +199,8 @@ impl ProvenanceTracker {
         labels.into_iter().take(MAX_LABELS_PER_RANGE).collect()
     }
 
-    fn replace_range(&mut self, address: u32, size: usize, mut labels: Vec<String>) {
-        let Some(end) = address.checked_add(size as u32) else {
+    fn replace_range(&mut self, address: u64, size: usize, mut labels: Vec<String>) {
+        let Some(end) = address.checked_add(size as u64) else {
             self.truncated = true;
             return;
         };
@@ -268,23 +268,23 @@ mod tests {
         tracker.source(
             ProvenanceSourceKind::Network,
             "response",
-            0x1000,
+            0x0000_0001_4000_1000,
             16,
             "InternetReadFile",
             1,
         );
-        tracker.propagate(0x1000, 0x2000, 8);
+        tracker.propagate(0x0000_0001_4000_1000, 0x0000_0001_5000_2000, 8);
         tracker.observe(
-            0x2000,
+            0x0000_0001_5000_2000,
             8,
             ProvenanceSinkKind::ProcessCommand,
             "cmd",
             "WinExec",
             2,
         );
-        tracker.clear(0x2000, 8);
+        tracker.clear(0x0000_0001_5000_2000, 8);
         tracker.observe(
-            0x2000,
+            0x0000_0001_5000_2000,
             8,
             ProvenanceSinkKind::NetworkRequest,
             "sink",
@@ -295,6 +295,7 @@ mod tests {
         assert_eq!(sources.len(), 1);
         assert_eq!(flows.len(), 1);
         assert_eq!(flows[0].source_ids, vec!["source-0001"]);
+        assert_eq!(flows[0].address, 0x0000_0001_5000_2000);
         assert_eq!(stats.flow_count, 1);
     }
 
