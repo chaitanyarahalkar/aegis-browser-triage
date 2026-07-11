@@ -21,6 +21,7 @@ pub struct GenerationObservation<'a> {
     pub executed: bool,
     pub entry_point_overwrite: bool,
     pub executable_heap: bool,
+    pub execution_address: Option<u64>,
 }
 
 impl GenerationTracker {
@@ -35,6 +36,12 @@ impl GenerationTracker {
             generation.executed |= observation.executed;
             generation.entry_point_overwrite |= observation.entry_point_overwrite;
             generation.executable_heap |= observation.executable_heap;
+            if generation.entry_point_candidate.is_none()
+                && let Some(address) = observation.execution_address
+            {
+                generation.entry_point_candidate = Some(address);
+                generation.first_execution_instruction = Some(observation.instruction);
+            }
             return;
         }
         if self.generations.len() >= MAX_GENERATIONS {
@@ -64,9 +71,39 @@ impl GenerationTracker {
             executed: observation.executed,
             entry_point_overwrite: observation.entry_point_overwrite,
             executable_heap: observation.executable_heap,
+            entry_point_candidate: observation.execution_address,
+            first_execution_instruction: observation
+                .execution_address
+                .map(|_| observation.instruction),
+            reconstructed_imports: Vec::new(),
         });
         self.current_by_region
             .insert(observation.region_base, self.generations.len() - 1);
+    }
+
+    pub fn record_runtime_import(&mut self, call_site: u64, module: &str, name: &str) -> bool {
+        let Some(generation) = self.generations.iter_mut().rev().find(|generation| {
+            generation.entry_point_candidate.is_some()
+                && call_site >= generation.region_base
+                && call_site < generation.region_base.saturating_add(generation.size)
+        }) else {
+            return false;
+        };
+        let import = format!("{module}!{name}");
+        if generation
+            .reconstructed_imports
+            .iter()
+            .any(|item| item == &import)
+        {
+            return true;
+        }
+        if generation.reconstructed_imports.len() >= 256 {
+            self.truncated = true;
+            return false;
+        }
+        generation.reconstructed_imports.push(import);
+        generation.reconstructed_imports.sort();
+        true
     }
 
     pub fn finish(self) -> (Vec<PayloadGeneration>, GenerationStats) {
@@ -80,10 +117,22 @@ impl GenerationTracker {
             .iter()
             .filter(|generation| generation.executed)
             .count();
+        let entry_point_candidates = self
+            .generations
+            .iter()
+            .filter(|generation| generation.entry_point_candidate.is_some())
+            .count();
+        let reconstructed_imports = self
+            .generations
+            .iter()
+            .map(|generation| generation.reconstructed_imports.len())
+            .sum();
         let stats = GenerationStats {
             count: self.generations.len(),
             chains,
             executed_generations,
+            entry_point_candidates,
+            reconstructed_imports,
             truncated: self.truncated,
         };
         (self.generations, stats)
@@ -106,6 +155,7 @@ mod tests {
             executed,
             entry_point_overwrite: false,
             executable_heap: true,
+            execution_address: executed.then_some(0x0000_0001_4000_1042),
         }
     }
 
@@ -124,5 +174,33 @@ mod tests {
         );
         assert_eq!(stats.chains, 1);
         assert_eq!(generations[0].region_base, 0x0000_0001_4000_1000);
+        assert_eq!(
+            generations[0].entry_point_candidate,
+            Some(0x0000_0001_4000_1042)
+        );
+        assert_eq!(stats.entry_point_candidates, 2);
+    }
+
+    #[test]
+    fn reconstructs_deduplicated_imports_from_generated_call_sites() {
+        let mut tracker = GenerationTracker::default();
+        tracker.observe(observation(&"a".repeat(64), true));
+        assert!(tracker.record_runtime_import(
+            0x0000_0001_4000_1080,
+            "KERNEL32.dll",
+            "GetTickCount"
+        ));
+        assert!(tracker.record_runtime_import(
+            0x0000_0001_4000_1080,
+            "KERNEL32.dll",
+            "GetTickCount"
+        ));
+        assert!(!tracker.record_runtime_import(0x0000_0001_5000_0000, "KERNEL32.dll", "Sleep"));
+        let (generations, stats) = tracker.finish();
+        assert_eq!(
+            generations[0].reconstructed_imports,
+            ["KERNEL32.dll!GetTickCount"]
+        );
+        assert_eq!(stats.reconstructed_imports, 1);
     }
 }

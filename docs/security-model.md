@@ -92,7 +92,11 @@ Dynamic analysis:
 - Guest scheduling is limited to 64 threads and 4,096 scheduler events. It is
   cooperative and deterministic; no sample instruction creates a browser or host thread
 - Dynamic symbol resolution creates emulator-owned API stubs only; resolved
-  addresses never refer to browser or host functions
+  addresses never refer to browser or host functions. PE64 dynamic resolution is
+  capped at 4,096 stubs and models both Win32 and bounded `Ldr*` descriptor paths
+- Modeled PE64 native APIs (`NtAllocateVirtualMemory`, `NtProtectVirtualMemory`,
+  bounded process-memory copies/queries, delays, and `Rtl*` memory helpers) operate
+  only on synthetic guest memory and deterministic virtual time
 - TLS callbacks execute under the same instruction, time, memory, and worker limits
 - Remote allocation, process writes, and thread creation are correlated as report
   events but never target or create a host process
@@ -100,6 +104,10 @@ Dynamic analysis:
   and 32 MiB total retained bytes; ordinary UI reads are capped at 64 KiB
 - Payload lineage is limited to 256 distinct generations. A generation is metadata
   linked to an already bounded artifact and never adds another raw-byte copy
+- An unpacking entry-point candidate is recorded only when execution enters a dirty
+  executable heap generation or a written original-entry region. Runtime imports
+  are associated only with calls originating inside such a candidate generation,
+  capped at 256 unique imports per generation
 - Artifact bytes remain in the dynamic worker for the session. Reports contain only
   bounded metadata, and raw-byte export requires a per-artifact confirmation
 - Unsupported instructions and invalid reads, writes, or execution become
@@ -153,6 +161,8 @@ PE64 support covers core integer, memory, control-flow, RIP-relative, and Micros
 x64 ABI behavior plus the milestone parity surfaces for runtime artifacts and
 payload generations, synthetic files/registry/scripted WinINet, API-level
 provenance, deterministic guest threads, and bounded vectored exception dispatch.
+Dynamic Win32/`Ldr*` export resolution, a conservative native-runtime subset, and
+generated-code entry/import heuristics extend compatibility without mapping a real OS.
 It does not duplicate every PE32 API model, x86 `FS:[0]` SEH chain, or full Windows
 x64 language-specific unwinding; unsupported paths terminate with structured
 diagnostics.
@@ -160,6 +170,10 @@ diagnostics.
 Provenance is intentionally API-level and follows modeled range writes, copies,
 conversions, and crypto outputs. It is not whole-CPU taint propagation or symbolic
 execution, so unmodeled instruction-only transformations can break a data-flow chain.
+
+Generated entry points and reconstructed imports are heuristics over the observed
+bounded execution path. They help recover unpacking evidence but do not prove the
+sample's original entry point or reconstruct a complete runnable PE import table.
 
 Snapshot state hashes are deterministic bounded fingerprints, not complete memory
 images. Matching hashes increase confidence that modeled states align; they do not

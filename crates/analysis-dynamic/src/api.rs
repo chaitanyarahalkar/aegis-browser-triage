@@ -76,6 +76,7 @@ pub fn signature(name: &str) -> ApiSignature {
         | "process32nextw"
         | "loadresource"
         | "sizeofresource" => (2, true),
+        "ntdelayexecution" => (2, true),
         "connectnamedpipe" => (2, true),
         "virtualprotect"
         | "connect"
@@ -95,6 +96,7 @@ pub fn signature(name: &str) -> ApiSignature {
         | "findresourcew" => (3, true),
         "virtualalloc" | "send" | "recv" | "internetreadfile" | "winhttpconnect"
         | "winhttpreaddata" => (4, true),
+        "ldrloaddll" | "ldrgetprocedureaddress" => (4, true),
         "raiseexception" => (4, true),
         "createeventa" | "createeventw" | "crypthashdata" => (4, true),
         "heapalloc" => (3, true),
@@ -118,7 +120,11 @@ pub fn signature(name: &str) -> ApiSignature {
         "virtualallocex"
         | "writeprocessmemory"
         | "virtualprotectex"
-        | "ntqueryinformationprocess" => (5, true),
+        | "ntqueryinformationprocess"
+        | "ntprotectvirtualmemory"
+        | "ntreadvirtualmemory"
+        | "ntwritevirtualmemory" => (5, true),
+        "ntallocatevirtualmemory" => (6, true),
         "createremotethread" => (7, true),
         "resumethread" => (1, true),
         "queryperformancecounter" | "getsysteminfo" | "globalmemorystatusex" => (1, true),
@@ -205,5 +211,9 @@ mod tests {
         assert!(!signature("_UnknownApi@16").modeled);
         assert_eq!(signature("CreateRemoteThread").argument_count, 7);
         assert_eq!(signature("CreateProcessW").argument_count, 10);
+        assert_eq!(signature("LdrLoadDll").argument_count, 4);
+        assert_eq!(signature("LdrGetProcedureAddress").argument_count, 4);
+        assert_eq!(signature("NtAllocateVirtualMemory").argument_count, 6);
+        assert_eq!(signature("NtProtectVirtualMemory").argument_count, 5);
     }
 }

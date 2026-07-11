@@ -939,6 +939,13 @@ impl Machine {
             && self.entry_point < start.saturating_add(region.data.len() as u32);
         let executed = trigger == "dynamic_execution";
         let executable_heap = start >= HEAP_BASE && region.permissions.execute;
+        let generation_relevant = entry_point_overwrite
+            || executable_heap
+            || trigger.contains("executable_transition")
+            || (executed && self.memory.was_written(address));
+        if executed && !generation_relevant {
+            return;
+        }
         let size = region.data.len() as u64;
         if let Some(artifact_id) = self.artifacts.capture(
             ArtifactCapture {
@@ -952,7 +959,7 @@ impl Machine {
             },
             &bytes,
             origin,
-        ) && (permissions.contains('x') || entry_point_overwrite)
+        ) && generation_relevant
         {
             self.generations.observe(GenerationObservation {
                 artifact_id,
@@ -965,6 +972,8 @@ impl Machine {
                 executed,
                 entry_point_overwrite,
                 executable_heap,
+                execution_address: (executed && self.memory.was_written(address))
+                    .then_some(u64::from(address)),
             });
         }
     }
@@ -2124,6 +2133,11 @@ impl Machine {
                 .wrapping_add((import.argument_count * 4) as u32);
         }
         let lower = normalize_name(&import.name);
+        self.generations.record_runtime_import(
+            u64::from(return_address),
+            &import.module,
+            &import.name,
+        );
         self.unique_api_names.insert(lower.clone());
         if api_signature.modeled {
             self.modeled_api_calls += 1;

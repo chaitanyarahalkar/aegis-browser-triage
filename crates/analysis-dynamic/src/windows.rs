@@ -121,6 +121,17 @@ impl VirtualWindows {
         }
     }
 
+    pub fn module_handle(&self, name: &str) -> Option<u32> {
+        self.handles
+            .iter()
+            .find_map(|(handle, resource)| match resource {
+                HandleResource::Module { name: loaded } if loaded.eq_ignore_ascii_case(name) => {
+                    Some(*handle)
+                }
+                _ => None,
+            })
+    }
+
     pub fn describe(&self, handle: u32) -> Option<String> {
         match self.handles.get(&handle) {
             Some(HandleResource::File { path, .. }) => Some(path.clone()),
@@ -494,5 +505,17 @@ mod tests {
         assert_eq!(windows.read_file(reader, 8), b"is");
         assert!(windows.close(writer));
         assert!(windows.close(reader));
+    }
+
+    #[test]
+    fn finds_loaded_modules_case_insensitively() {
+        let mut windows = VirtualWindows::default();
+        let handle = windows
+            .allocate(HandleResource::Module {
+                name: "KERNEL32.dll".into(),
+            })
+            .unwrap();
+        assert_eq!(windows.module_handle("kernel32.DLL"), Some(handle));
+        assert_eq!(windows.module_name(handle), Some("KERNEL32.dll"));
     }
 }

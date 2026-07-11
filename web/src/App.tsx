@@ -189,6 +189,19 @@ export default function App() {
     }
   }, [inspectFile])
 
+  const analyzePe64UnpackingDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-unpacking-pe64.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Safe PE64 unpacking fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Safe PE64 unpacking fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
   const analyzeArtifactDemo = useCallback(async () => {
     try {
       const name = 'aegis-safe-runtime-artifact-pe32.exe'
@@ -396,6 +409,7 @@ export default function App() {
               analyzeDemo={analyzeDemo}
               analyzePe64Demo={analyzePe64Demo}
               analyzePe64ParityDemo={analyzePe64ParityDemo}
+              analyzePe64UnpackingDemo={analyzePe64UnpackingDemo}
               analyzeArtifactDemo={analyzeArtifactDemo}
               analyzeSehDemo={analyzeSehDemo}
               analyzeThreadsDemo={analyzeThreadsDemo}
@@ -469,7 +483,7 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzePe64ParityDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzePe64ParityDemo, analyzePe64UnpackingDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
@@ -477,6 +491,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
   analyzeDemo: () => Promise<void>
   analyzePe64Demo: () => Promise<void>
   analyzePe64ParityDemo: () => Promise<void>
+  analyzePe64UnpackingDemo: () => Promise<void>
   analyzeArtifactDemo: () => Promise<void>
   analyzeSehDemo: () => Promise<void>
   analyzeThreadsDemo: () => Promise<void>
@@ -506,6 +521,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button secondary" type="button" onClick={() => void analyzeDemo()}>Use safe PE demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzePe64Demo()}>Use safe PE64 demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzePe64ParityDemo()}>Use PE64 parity demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzePe64UnpackingDemo()}>Use PE64 unpacking demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeArtifactDemo()}>Use runtime artifact demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeSehDemo()}>Use SEH demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeThreadsDemo()}>Use threads demo</button>
@@ -822,7 +838,7 @@ function UnpackingView({ report, yara, status, onScan }: { report: DynamicReport
   if (!report.payload_generations.length) return <EmptyState title="No payload generations observed" text="No dirty memory region became executable, overwrote the entry-point region, or produced a distinct executed version." />
   const artifactById = new Map(report.artifacts.map((artifact) => [artifact.id, artifact]))
   const yaraById = new Map(yara.map((result) => [result.artifact_id, result]))
-  return <div className="generation-layout"><div className="artifact-actions"><div><strong>{report.generation_stats.count} generations across {report.generation_stats.chains} chains</strong><span>{report.generation_stats.executed_generations} executed · lineage retained by region and hash</span></div><button className="button primary compact" type="button" disabled={status === 'running'} onClick={onScan}>{status === 'running' ? 'Scanning generations…' : 'Scan generations with YARA'}</button></div><Section title="Payload lineage" description="Each row is a distinct bounded memory version; parent links connect successive versions of the same region."><Table><thead><tr><th>Generation</th><th>Parent</th><th>Region</th><th>Trigger</th><th>Flags</th><th>SHA-256</th><th>YARA</th></tr></thead><tbody>{report.payload_generations.map((generation) => { const artifact = artifactById.get(generation.artifact_id); const result = yaraById.get(generation.artifact_id); return <tr key={generation.id}><td><code className="strong-code">#{generation.sequence + 1}</code></td><td>{generation.parent_id ? <code>{generation.parent_id.split('-').slice(0, 2).join('-')}</code> : 'Root'}</td><td><code>{formatOffset(generation.region_base)}</code><small>{formatBytes(generation.size)} · {generation.permissions}</small></td><td>{generation.trigger}<small>instruction {generation.capture_instruction.toLocaleString()}</small></td><td><div className="generation-flags">{generation.executed && <span className="tag danger">executed</span>}{generation.executable_heap && <span className="tag">heap</span>}{generation.entry_point_overwrite && <span className="tag danger">entry overwrite</span>}</div></td><td><code>{artifact?.sha256.slice(0, 16) ?? generation.artifact_id.slice(0, 16)}…</code></td><td>{result?.error ? 'Error' : result ? result.report?.matches.map((match) => match.identifier).join(', ') || 'No match' : 'Not scanned'}</td></tr> })}</tbody></Table></Section></div>
+  return <div className="generation-layout"><div className="artifact-actions"><div><strong>{report.generation_stats.count} generations across {report.generation_stats.chains} chains</strong><span>{report.generation_stats.executed_generations} executed · {report.generation_stats.entry_point_candidates} entry candidates · {report.generation_stats.reconstructed_imports} reconstructed imports</span></div><button className="button primary compact" type="button" disabled={status === 'running'} onClick={onScan}>{status === 'running' ? 'Scanning generations…' : 'Scan generations with YARA'}</button></div><Section title="Payload lineage" description="Generated executable regions include bounded entry-point candidates and imports observed from calls originating inside that generation."><Table><thead><tr><th>Generation</th><th>Parent</th><th>Region</th><th>Candidate entry</th><th>Observed runtime imports</th><th>Trigger</th><th>Flags</th><th>SHA-256</th><th>YARA</th></tr></thead><tbody>{report.payload_generations.map((generation) => { const artifact = artifactById.get(generation.artifact_id); const result = yaraById.get(generation.artifact_id); return <tr key={generation.id}><td><code className="strong-code">#{generation.sequence + 1}</code></td><td>{generation.parent_id ? <code>{generation.parent_id.split('-').slice(0, 2).join('-')}</code> : 'Root'}</td><td><code>{formatOffset(generation.region_base)}</code><small>{formatBytes(generation.size)} · {generation.permissions}</small></td><td>{generation.entry_point_candidate == null ? '—' : <><code>{formatOffset(generation.entry_point_candidate)}</code><small>instruction {generation.first_execution_instruction?.toLocaleString()}</small></>}</td><td>{generation.reconstructed_imports.length ? generation.reconstructed_imports.map((item) => <code key={item}>{item}</code>) : '—'}</td><td>{generation.trigger}<small>instruction {generation.capture_instruction.toLocaleString()}</small></td><td><div className="generation-flags">{generation.executed && <span className="tag danger">executed</span>}{generation.executable_heap && <span className="tag">heap</span>}{generation.entry_point_overwrite && <span className="tag danger">entry overwrite</span>}</div></td><td><code>{artifact?.sha256.slice(0, 16) ?? generation.artifact_id.slice(0, 16)}…</code></td><td>{result?.error ? 'Error' : result ? result.report?.matches.map((match) => match.identifier).join(', ') || 'No match' : 'Not scanned'}</td></tr> })}</tbody></Table></Section></div>
 }
 
 function ProfilePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {

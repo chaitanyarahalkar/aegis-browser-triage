@@ -31,6 +31,8 @@ const COMMAND_LINE64_A: u64 = PROCESS_ENV64_BASE;
 const TEB64_BASE: u64 = 0x0000_007f_fde0_0000;
 const PEB64_BASE: u64 = 0x0000_007f_fdf0_0000;
 const HEAP64_BASE: u64 = 0x0000_0050_0000_0000;
+const DYNAMIC_API64_BASE: u64 = 0x0000_006e_0000_0000;
+const MAX_DYNAMIC_API64_STUBS: usize = 4_096;
 const EXCEPTION64_SCRATCH_BASE: u64 = PROCESS_ENV64_BASE + 0x1000;
 const EXCEPTION64_RECORD_BASE: u64 = EXCEPTION64_SCRATCH_BASE;
 const EXCEPTION64_CONTEXT_BASE: u64 = EXCEPTION64_SCRATCH_BASE + 0x200;
@@ -146,6 +148,8 @@ pub(crate) fn run(
         snapshots: Vec::new(),
         snapshots_truncated: false,
         heap_next: HEAP64_BASE,
+        dynamic_api_next: DYNAMIC_API64_BASE,
+        dynamic_api_resolutions: 0,
         windows: VirtualWindows::default(),
         network_runtime: NetworkRuntime::new(network_scenario),
         artifacts: ArtifactStore::default(),
@@ -197,6 +201,39 @@ pub(crate) fn run(
     let (artifacts, artifact_stats, artifact_blobs) = machine.artifacts.finish();
     let (payload_generations, generation_stats) = machine.generations.finish();
     let (provenance_sources, provenance_flows, provenance_stats) = machine.provenance.finish();
+    if generation_stats.entry_point_candidates > 0 {
+        findings.retain(|finding| finding.id != "no-modeled-behavior");
+        findings.push(DynamicFinding {
+            id: "unpacked-entry-point-candidate".into(),
+            title: "Generated payload entry point identified".into(),
+            severity: DynamicSeverity::High,
+            rationale: "Execution entered a dirty executable allocation. The address is a bounded unpacking candidate, not a guaranteed original entry point.".into(),
+            evidence: payload_generations
+                .iter()
+                .filter_map(|generation| {
+                    generation.entry_point_candidate.map(|address| {
+                        format!(
+                            "{} · 0x{address:016x} · {} observed imports",
+                            generation.id,
+                            generation.reconstructed_imports.len()
+                        )
+                    })
+                })
+                .collect(),
+        });
+    }
+    if generation_stats.reconstructed_imports > 0 {
+        findings.push(DynamicFinding {
+            id: "runtime-import-reconstruction".into(),
+            title: "Runtime imports reconstructed".into(),
+            severity: DynamicSeverity::Medium,
+            rationale: "API calls originating inside generated executable memory were associated with the active payload generation.".into(),
+            evidence: payload_generations
+                .iter()
+                .flat_map(|generation| generation.reconstructed_imports.iter().cloned())
+                .collect(),
+        });
+    }
     let unwind_count = loaded.unwind_functions.len();
     let report = DynamicReport {
         schema_version: crate::DYNAMIC_SCHEMA_VERSION,
@@ -263,7 +300,7 @@ pub(crate) fn run(
             unique_api_names: machine.unique_api_names.len(),
             modeled_api_calls: machine.modeled_api_calls,
             unmodeled_api_calls: machine.unmodeled_api_calls,
-            dynamic_api_resolutions: 0,
+            dynamic_api_resolutions: machine.dynamic_api_resolutions,
         },
         diagnostics: ExecutionDiagnostics {
             first_unsupported: machine.first_unsupported,
@@ -313,6 +350,8 @@ struct Machine64 {
     snapshots: Vec<ExecutionSnapshot>,
     snapshots_truncated: bool,
     heap_next: u64,
+    dynamic_api_next: u64,
+    dynamic_api_resolutions: usize,
     windows: VirtualWindows,
     network_runtime: NetworkRuntime,
     artifacts: ArtifactStore,
@@ -709,6 +748,15 @@ impl Machine64 {
         let entry_point_overwrite = self.memory.was_written(self.entry_point)
             && self.entry_point >= start
             && self.entry_point < start + size;
+        let executed = trigger == "dynamic_execution";
+        let executable_heap = start >= HEAP64_BASE && executable;
+        let generation_relevant = entry_point_overwrite
+            || executable_heap
+            || trigger.contains("executable_transition")
+            || (executed && self.memory.was_written(address));
+        if executed && !generation_relevant {
+            return;
+        }
         if let Some(artifact_id) = self.artifacts.capture(
             ArtifactCapture {
                 kind,
@@ -721,7 +769,7 @@ impl Machine64 {
             },
             &bytes,
             origin,
-        ) && (executable || entry_point_overwrite)
+        ) && generation_relevant
         {
             self.generations.observe(GenerationObservation {
                 artifact_id,
@@ -731,9 +779,11 @@ impl Machine64 {
                 virtual_time_ms: self.virtual_time_ms,
                 trigger,
                 permissions,
-                executed: trigger == "dynamic_execution",
+                executed,
                 entry_point_overwrite,
-                executable_heap: start >= HEAP64_BASE && executable,
+                executable_heap,
+                execution_address: (executed && self.memory.was_written(address))
+                    .then_some(address),
             });
         }
     }
@@ -1107,10 +1157,98 @@ impl Machine64 {
         }
     }
 
+    fn load_module(&mut self, requested: String, source_api: &str) -> u64 {
+        let module = if requested.trim().is_empty() {
+            "dynamic.dll".to_owned()
+        } else {
+            requested.trim().to_owned()
+        };
+        if let Some(handle) = self.windows.module_handle(&module) {
+            return u64::from(handle);
+        }
+        let Some(handle) = self.windows.allocate(HandleResource::Module {
+            name: module.clone(),
+        }) else {
+            return 0;
+        };
+        self.system.push(SystemEvent {
+            category: "loader".into(),
+            operation: "load_module".into(),
+            target: module,
+            detail: format!("Synthetic module handle created by {source_api}"),
+            result: u64::from(handle),
+        });
+        u64::from(handle)
+    }
+
+    fn resolve_dynamic_api(&mut self, module_handle: u64, symbol: String, source_api: &str) -> u64 {
+        let module = if module_handle == self.image_base {
+            "sample64.exe".to_owned()
+        } else {
+            self.windows
+                .module_name(module_handle as u32)
+                .unwrap_or("dynamic.dll")
+                .to_owned()
+        };
+        if let Some((address, _)) = self.imports.iter().find(|(address, import)| {
+            **address >= DYNAMIC_API64_BASE
+                && import.module.eq_ignore_ascii_case(&module)
+                && import.name == symbol
+        }) {
+            return *address;
+        }
+        if self.dynamic_api_resolutions >= MAX_DYNAMIC_API64_STUBS {
+            self.truncated = true;
+            return 0;
+        }
+        let stub = self.dynamic_api_next;
+        self.dynamic_api_next = self.dynamic_api_next.saturating_add(0x100);
+        let api_signature = crate::api::signature(&symbol);
+        self.imports.insert(
+            stub,
+            ApiImport {
+                module: module.clone(),
+                name: symbol.clone(),
+                argument_count: api_signature.argument_count,
+            },
+        );
+        self.dynamic_api_resolutions += 1;
+        self.system.push(SystemEvent {
+            category: "loader".into(),
+            operation: "resolve_export".into(),
+            target: format!("{module}!{symbol}"),
+            detail: format!("Emulator-owned x64 API stub created by {source_api}"),
+            result: stub,
+        });
+        stub
+    }
+
+    fn read_ansi_string64(&self, descriptor: u64, maximum: usize) -> String {
+        if descriptor == 0 {
+            return String::new();
+        }
+        let length = self.memory.read_u16(descriptor).unwrap_or(0) as usize;
+        let pointer = self.memory.read_u64(descriptor + 8).unwrap_or(0);
+        let length = length.min(maximum);
+        String::from_utf8_lossy(self.memory.read(pointer, length).unwrap_or_default()).into_owned()
+    }
+
+    fn read_unicode_string64(&self, descriptor: u64, maximum_units: usize) -> String {
+        if descriptor == 0 {
+            return String::new();
+        }
+        let byte_length = self.memory.read_u16(descriptor).unwrap_or(0) as usize;
+        let pointer = self.memory.read_u64(descriptor + 8).unwrap_or(0);
+        let units = (byte_length / 2).min(maximum_units);
+        self.memory.read_wide_string(pointer, units)
+    }
+
     fn handle_api(&mut self, import: ApiImport) -> Result<(), DynamicError> {
         let return_address = self.cpu.pop(&self.memory)?;
         let args = x64_api_arguments(&self.cpu, &self.memory, import.argument_count)?;
         let name = normalize_name(&import.name);
+        self.generations
+            .record_runtime_import(return_address, &import.module, &import.name);
         self.unique_api_names.insert(name.clone());
         let supported = matches!(
             name.as_str(),
@@ -1120,6 +1258,22 @@ impl Machine64 {
                 | "getcurrentprocessid"
                 | "getcurrentthreadid"
                 | "getcommandlinea"
+                | "getcommandlinew"
+                | "getmodulehandlea"
+                | "getmodulehandlew"
+                | "loadlibrarya"
+                | "loadlibraryw"
+                | "getprocaddress"
+                | "ldrloaddll"
+                | "ldrgetprocedureaddress"
+                | "rtlmovememory"
+                | "rtlzeromemory"
+                | "ntdelayexecution"
+                | "ntqueryinformationprocess"
+                | "ntallocatevirtualmemory"
+                | "ntprotectvirtualmemory"
+                | "ntreadvirtualmemory"
+                | "ntwritevirtualmemory"
                 | "isdebuggerpresent"
                 | "sleep"
                 | "winexec"
@@ -1193,6 +1347,122 @@ impl Machine64 {
                 "query".into(),
                 "sample64.exe".into(),
             ),
+            "getcommandlinew" => {
+                let wide = COMMAND_LINE64_A + 0x400;
+                let bytes: Vec<u8> = "sample64.exe\0"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                let _ = self.memory.write_force(wide, &bytes);
+                (
+                    wide,
+                    "Returned synthetic UTF-16 x64 command line".into(),
+                    "process".into(),
+                    "query".into(),
+                    "sample64.exe".into(),
+                )
+            }
+            "getmodulehandlea" | "getmodulehandlew" => {
+                let pointer = args.first().copied().unwrap_or(0);
+                let module = if pointer == 0 {
+                    String::new()
+                } else if name.ends_with('w') {
+                    self.memory.read_wide_string(pointer, 260)
+                } else {
+                    self.memory.read_c_string(pointer, 260)
+                };
+                let handle = if pointer == 0 {
+                    self.image_base
+                } else {
+                    self.load_module(module.clone(), &import.name)
+                };
+                (
+                    handle,
+                    if pointer == 0 {
+                        "Returned PE64 image-base module handle".into()
+                    } else {
+                        format!("Returned synthetic module handle for {module}")
+                    },
+                    "loader".into(),
+                    "get_module".into(),
+                    if module.is_empty() {
+                        "sample64.exe".into()
+                    } else {
+                        module
+                    },
+                )
+            }
+            "loadlibrarya" | "loadlibraryw" => {
+                let pointer = args.first().copied().unwrap_or(0);
+                let module = if name.ends_with('w') {
+                    self.memory.read_wide_string(pointer, 260)
+                } else {
+                    self.memory.read_c_string(pointer, 260)
+                };
+                let handle = self.load_module(module.clone(), &import.name);
+                (
+                    handle,
+                    format!("Loaded synthetic x64 module {module}"),
+                    "loader".into(),
+                    "load_module".into(),
+                    module,
+                )
+            }
+            "getprocaddress" => {
+                let module_handle = args.first().copied().unwrap_or(0);
+                let symbol_pointer = args.get(1).copied().unwrap_or(0);
+                let symbol = if symbol_pointer <= 0xffff {
+                    format!("ordinal:{symbol_pointer}")
+                } else {
+                    self.memory.read_c_string(symbol_pointer, 260)
+                };
+                let stub = self.resolve_dynamic_api(module_handle, symbol.clone(), &import.name);
+                (
+                    stub,
+                    format!("Resolved synthetic x64 export {symbol}"),
+                    "loader".into(),
+                    "resolve_export".into(),
+                    symbol,
+                )
+            }
+            "ldrloaddll" => {
+                let descriptor = args.get(2).copied().unwrap_or(0);
+                let output = args.get(3).copied().unwrap_or(0);
+                let module = self.read_unicode_string64(descriptor, 260);
+                let handle = self.load_module(module.clone(), &import.name);
+                if output != 0 {
+                    let _ = self.memory.write_u64(output, handle);
+                }
+                (
+                    if handle == 0 { 0xc000_0001 } else { 0 },
+                    format!("LdrLoadDll mapped synthetic module {module}"),
+                    "loader".into(),
+                    "load_module".into(),
+                    module,
+                )
+            }
+            "ldrgetprocedureaddress" => {
+                let module_handle = args.first().copied().unwrap_or(0);
+                let descriptor = args.get(1).copied().unwrap_or(0);
+                let ordinal = args.get(2).copied().unwrap_or(0);
+                let output = args.get(3).copied().unwrap_or(0);
+                let symbol = if descriptor == 0 {
+                    format!("ordinal:{ordinal}")
+                } else {
+                    self.read_ansi_string64(descriptor, 260)
+                };
+                let stub = self.resolve_dynamic_api(module_handle, symbol.clone(), &import.name);
+                if output != 0 {
+                    let _ = self.memory.write_u64(output, stub);
+                }
+                (
+                    if stub == 0 { 0xc000_0001 } else { 0 },
+                    format!("LdrGetProcedureAddress resolved {symbol}"),
+                    "loader".into(),
+                    "resolve_export".into(),
+                    symbol,
+                )
+            }
             "isdebuggerpresent" => (
                 u64::from(self.environment.debugger_present),
                 "Returned deterministic debugger state".into(),
@@ -1337,6 +1607,176 @@ impl Machine64 {
                     "memory".into(),
                     "protect".into(),
                     format!("0x{address:016x}"),
+                )
+            }
+            "rtlmovememory" => {
+                let destination = args.first().copied().unwrap_or(0);
+                let source = args.get(1).copied().unwrap_or(0);
+                let length = args.get(2).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let bytes = self.memory.read(source, length)?.to_vec();
+                self.memory.write(destination, &bytes)?;
+                self.provenance.propagate(source, destination, length);
+                (
+                    destination,
+                    format!("Copied {length} bounded x64 memory bytes"),
+                    "memory".into(),
+                    "copy".into(),
+                    format!("0x{source:016x} -> 0x{destination:016x}"),
+                )
+            }
+            "rtlzeromemory" => {
+                let destination = args.first().copied().unwrap_or(0);
+                let length = args.get(1).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                self.memory.write(destination, &vec![0; length])?;
+                self.provenance.clear(destination, length);
+                (
+                    0,
+                    format!("Zeroed {length} bounded x64 memory bytes"),
+                    "memory".into(),
+                    "zero".into(),
+                    format!("0x{destination:016x}"),
+                )
+            }
+            "ntdelayexecution" => {
+                let interval = args.get(1).copied().unwrap_or(0);
+                let ticks = self.memory.read_u64(interval).unwrap_or(0) as i64;
+                let delay = ticks.unsigned_abs().saturating_div(10_000).min(86_400_000);
+                self.virtual_time_ms = self.virtual_time_ms.saturating_add(delay);
+                (
+                    0,
+                    format!("Advanced deterministic x64 clock by {delay} ms"),
+                    "time".into(),
+                    "native_delay".into(),
+                    format!("{delay} ms"),
+                )
+            }
+            "ntqueryinformationprocess" => {
+                let output = args.get(2).copied().unwrap_or(0);
+                let length = args.get(3).copied().unwrap_or(0).min(256) as usize;
+                if output != 0 && length != 0 {
+                    self.memory.write(output, &vec![0; length])?;
+                }
+                if let Some(return_length) = args.get(4).copied().filter(|value| *value != 0) {
+                    self.memory.write_u32(return_length, length as u32)?;
+                }
+                (
+                    0,
+                    "Returned deterministic x64 process information".into(),
+                    "process".into(),
+                    "native_query".into(),
+                    "current process".into(),
+                )
+            }
+            "ntallocatevirtualmemory" => {
+                let base_pointer = args.get(1).copied().unwrap_or(0);
+                let size_pointer = args.get(3).copied().unwrap_or(0);
+                let requested = self.memory.read_u64(base_pointer).unwrap_or(0);
+                let size = self
+                    .memory
+                    .read_u64(size_pointer)
+                    .unwrap_or(0)
+                    .clamp(1, 16 * 1024 * 1024) as usize;
+                let address = if requested == 0 {
+                    let value = self.heap_next;
+                    self.heap_next = self
+                        .heap_next
+                        .saturating_add(align_page(size) as u64 + 0x1000);
+                    value
+                } else {
+                    requested
+                };
+                let permissions = protection64(args.get(5).copied().unwrap_or(0x04) as u32);
+                let ok = self
+                    .memory
+                    .map(
+                        address,
+                        align_page(size),
+                        permissions,
+                        "x64 NtAllocateVirtualMemory",
+                    )
+                    .is_ok();
+                if ok {
+                    self.memory.write_u64(base_pointer, address)?;
+                    self.memory
+                        .write_u64(size_pointer, align_page(size) as u64)?;
+                    self.memory_events.push(MemoryEvent {
+                        operation: "native_allocate".into(),
+                        address,
+                        size: size as u32,
+                        permissions: permissions.display(),
+                    });
+                }
+                (
+                    if ok { 0 } else { 0xc000_0017 },
+                    format!("NtAllocateVirtualMemory reserved {size} synthetic bytes"),
+                    "memory".into(),
+                    "native_allocate".into(),
+                    format!("0x{address:016x}"),
+                )
+            }
+            "ntprotectvirtualmemory" => {
+                let base_pointer = args.get(1).copied().unwrap_or(0);
+                let size_pointer = args.get(2).copied().unwrap_or(0);
+                let address = self.memory.read_u64(base_pointer).unwrap_or(0);
+                let size = self.memory.read_u64(size_pointer).unwrap_or(0).max(1) as usize;
+                let permissions = protection64(args.get(3).copied().unwrap_or(0x04) as u32);
+                let ok = self
+                    .memory
+                    .set_permissions(address, size, permissions)
+                    .is_ok();
+                if let Some(old) = args.get(4).copied().filter(|value| *value != 0) {
+                    self.memory.write_u32(old, 0x04)?;
+                }
+                if ok {
+                    self.memory_events.push(MemoryEvent {
+                        operation: "native_protect".into(),
+                        address,
+                        size: size as u32,
+                        permissions: permissions.display(),
+                    });
+                    if permissions.execute {
+                        self.capture_memory_region(
+                            address,
+                            "native_executable_transition",
+                            "NtProtectVirtualMemory",
+                            true,
+                        );
+                    }
+                }
+                (
+                    if ok { 0 } else { 0xc000_0005 },
+                    format!("NtProtectVirtualMemory set {}", permissions.display()),
+                    "memory".into(),
+                    "native_protect".into(),
+                    format!("0x{address:016x}"),
+                )
+            }
+            "ntreadvirtualmemory" | "ntwritevirtualmemory" => {
+                let base = args.get(1).copied().unwrap_or(0);
+                let buffer = args.get(2).copied().unwrap_or(0);
+                let length = args.get(3).copied().unwrap_or(0).min(1024 * 1024) as usize;
+                let (source, destination) = if name == "ntreadvirtualmemory" {
+                    (base, buffer)
+                } else {
+                    (buffer, base)
+                };
+                let bytes = self.memory.read(source, length)?.to_vec();
+                self.memory.write(destination, &bytes)?;
+                self.provenance.propagate(source, destination, length);
+                if let Some(written) = args.get(4).copied().filter(|value| *value != 0) {
+                    self.memory.write_u64(written, length as u64)?;
+                }
+                (
+                    0,
+                    format!("Copied {length} bytes through {name}"),
+                    "memory".into(),
+                    if name == "ntreadvirtualmemory" {
+                        "native_read"
+                    } else {
+                        "native_write"
+                    }
+                    .into(),
+                    format!("0x{source:016x} -> 0x{destination:016x}"),
                 )
             }
             "closehandle" => {

@@ -279,7 +279,7 @@ export interface DynamicReport {
   artifacts: ArtifactSummary[]
   artifact_stats: { count: number; retained_bytes: number; truncated: boolean }
   payload_generations: PayloadGeneration[]
-  generation_stats: { count: number; chains: number; executed_generations: number; truncated: boolean }
+  generation_stats: { count: number; chains: number; executed_generations: number; entry_point_candidates: number; reconstructed_imports: number; truncated: boolean }
   timeline: DynamicTimelineEvent[]
   coverage: DynamicCoverage
   diagnostics: DynamicExecutionDiagnostics
@@ -302,6 +302,9 @@ export interface PayloadGeneration {
   executed: boolean
   entry_point_overwrite: boolean
   executable_heap: boolean
+  entry_point_candidate: number | null
+  first_execution_instruction: number | null
+  reconstructed_imports: string[]
 }
 
 export type ArtifactKind = 'memory' | 'virtual_file' | 'remote_memory' | 'configuration' | 'network_download'

@@ -31,6 +31,9 @@ Dynamic reports currently include:
 - PE64 parity for runtime memory/file/network artifacts, payload generations,
   synthetic files and registry values, scripted WinINet responses, API-level
   provenance, deterministic guest threads, and vectored exception dispatch
+- PE64 dynamic module and export resolution through `LoadLibrary`,
+  `GetProcAddress`, `LdrLoadDll`, and `LdrGetProcedureAddress`, with
+  emulator-owned stubs and a bounded native-memory/runtime API subset
 - Bounded instruction traces and termination reasons
 - Expanded integer, conditional, flag, loop, and repeated string instructions
 - Bit-test/scan, atomic exchange, double-shift, SSE2 move/logic/scalar arithmetic,
@@ -57,6 +60,8 @@ Dynamic reports currently include:
   synthetic remote memory, with hashes, entropy, strings, indicators, and origins
 - Bounded unpacking lineage for distinct written/executable memory generations,
   including parent links, execution state, executable heaps, and entry-point overwrites
+- Automated generated-code entry-point candidates and runtime import reconstruction
+  from API calls whose return sites originate inside a captured payload generation
 - Bounded x86 structured exception dispatch through guest `FS:[0]` chains and x64
   vectored dispatch with runtime-function lookup evidence, including bounded
   continue-execution/search dispositions and synthetic records/contexts

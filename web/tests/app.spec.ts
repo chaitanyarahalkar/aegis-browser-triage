@@ -51,7 +51,7 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v13', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v14', { exact: true })).toBeVisible()
 })
 
 test('runs a PE64 image through the x86-64 interpreter and ABI', async ({ page, isMobile }) => {
@@ -76,7 +76,7 @@ test('runs a PE64 image through the x86-64 interpreter and ABI', async ({ page, 
   await page.getByRole('button', { name: 'Export report' }).click()
   const download = await downloadPromise
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
-  expect(json.dynamic.schema_version).toBe(13)
+  expect(json.dynamic.schema_version).toBe(14)
   expect(json.dynamic.profile.architecture).toBe('x86-64 (64-bit)')
   expect(json.dynamic.profile.image_base).toBe(0x140000000)
   expect(json.dynamic.unwind_functions).toHaveLength(1)
@@ -122,6 +122,35 @@ test('shows PE64 parity artifacts, state, provenance, threads, and exceptions', 
   expect(dynamic.thread_events.some((event: { operation: string }) => event.operation === 'scheduled')).toBe(true)
   expect(dynamic.exceptions[0].outcome).toBe('continued_execution')
   expect(dynamic.system.some((event: { operation: string }) => event.operation === 'runtime_function_lookup')).toBe(true)
+})
+
+test('identifies a generated PE64 entry candidate and reconstructs runtime imports', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop x64 unpacking workflow')
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Use PE64 unpacking demo' }).click()
+  await expect(page.getByText('aegis-safe-unpacking-pe64.exe')).toBeVisible()
+  await runDynamic(page)
+  await expect(page.getByText('Generated payload entry point identified', { exact: true })).toBeVisible()
+  await expect(page.getByText('Runtime imports reconstructed', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: /^Unpacking \([1-9]/ }).click()
+  await expect(page.getByRole('heading', { name: 'Payload lineage' })).toBeVisible()
+  await expect(page.getByText('0x0000005000000020', { exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'KERNEL32.dll!GetTickCount', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Coverage' }).click()
+  await expect(page.getByText('2 dynamically resolved', { exact: true })).toBeVisible()
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export report' }).click()
+  const download = await downloadPromise
+  const dynamic = JSON.parse(readFileSync(await download.path()!, 'utf8')).dynamic
+  expect(dynamic.schema_version).toBe(14)
+  expect(dynamic.coverage.dynamic_api_resolutions).toBe(2)
+  expect(dynamic.generation_stats.entry_point_candidates).toBeGreaterThanOrEqual(1)
+  expect(dynamic.generation_stats.reconstructed_imports).toBe(1)
+  const generation = dynamic.payload_generations.find((item: { entry_point_candidate: number | null }) => item.entry_point_candidate != null)
+  expect(generation.entry_point_candidate).toBe(0x5000000020)
+  expect(generation.reconstructed_imports).toEqual(['KERNEL32.dll!GetTickCount'])
 })
 
 test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
@@ -231,7 +260,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(13)
+  expect(json.dynamic.schema_version).toBe(14)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')

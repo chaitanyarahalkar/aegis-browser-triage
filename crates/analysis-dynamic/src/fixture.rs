@@ -484,6 +484,219 @@ pub fn parity_dynamic_pe64() -> Vec<u8> {
     bytes
 }
 
+/// Harmless PE64 fixture for dynamic export resolution and automated unpacking
+/// evidence. It copies an inert MZ-marked stage into synthetic heap memory,
+/// marks it executable, resolves GetTickCount, and calls that emulator-owned
+/// stub from the generated stage before exiting.
+pub fn unpacking_dynamic_pe64() -> Vec<u8> {
+    const IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
+    const CODE_RVA: u32 = 0x1000;
+    const MODULE_RVA: u32 = 0x1500;
+    const SYMBOL_RVA: u32 = 0x1520;
+    const STAGE_RVA: u32 = 0x1540;
+    const DELAY_RVA: u32 = 0x1580;
+    const BASE_RVA: u32 = 0x1588;
+    const SIZE_RVA: u32 = 0x1590;
+    const OLD_PROTECT_RVA: u32 = 0x1598;
+    const UNICODE_DESCRIPTOR_RVA: u32 = 0x15a0;
+    const UNICODE_BUFFER_RVA: u32 = 0x15b0;
+    const ANSI_DESCRIPTOR_RVA: u32 = 0x15e0;
+    const ANSI_BUFFER_RVA: u32 = 0x15c8;
+    const MODULE_OUTPUT_RVA: u32 = 0x15f0;
+    const API_OUTPUT_RVA: u32 = 0x15f8;
+    const QUERY_OUTPUT_RVA: u32 = 0x1700;
+    const QUERY_LENGTH_RVA: u32 = 0x1720;
+    const LOOKUP_RVA: u32 = 0x2040;
+    const IAT_RVA: u32 = 0x20e0;
+
+    fn mov_imm64(code: &mut Vec<u8>, register: u8, value: u64) {
+        match register {
+            1 => code.extend_from_slice(&[0x48, 0xb9]),
+            2 => code.extend_from_slice(&[0x48, 0xba]),
+            8 => code.extend_from_slice(&[0x49, 0xb8]),
+            9 => code.extend_from_slice(&[0x49, 0xb9]),
+            _ => unreachable!(),
+        }
+        code.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn call_iat(code: &mut Vec<u8>, index: usize) {
+        let next_rva = CODE_RVA + code.len() as u32 + 6;
+        let target = IAT_RVA + (index * 8) as u32;
+        code.extend_from_slice(&[0xff, 0x15]);
+        code.extend_from_slice(&((target as i64 - next_rva as i64) as i32).to_le_bytes());
+    }
+
+    fn stack_imm32(code: &mut Vec<u8>, offset: u8, value: u32) {
+        code.extend_from_slice(&[0x48, 0xc7, 0x44, 0x24, offset]);
+        code.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn load_r12_rip(code: &mut Vec<u8>, target_rva: u32) {
+        let next_rva = CODE_RVA + code.len() as u32 + 7;
+        code.extend_from_slice(&[0x4c, 0x8b, 0x25]);
+        code.extend_from_slice(&((target_rva as i64 - next_rva as i64) as i32).to_le_bytes());
+    }
+
+    fn load_rcx_rip(code: &mut Vec<u8>, target_rva: u32) {
+        let next_rva = CODE_RVA + code.len() as u32 + 7;
+        code.extend_from_slice(&[0x48, 0x8b, 0x0d]);
+        code.extend_from_slice(&((target_rva as i64 - next_rva as i64) as i32).to_le_bytes());
+    }
+
+    fn load_rax_rip(code: &mut Vec<u8>, target_rva: u32) {
+        let next_rva = CODE_RVA + code.len() as u32 + 7;
+        code.extend_from_slice(&[0x48, 0x8b, 0x05]);
+        code.extend_from_slice(&((target_rva as i64 - next_rva as i64) as i32).to_le_bytes());
+    }
+
+    let imports: [&[u8]; 10] = [
+        b"NtAllocateVirtualMemory",
+        b"RtlMoveMemory",
+        b"NtProtectVirtualMemory",
+        b"LoadLibraryA",
+        b"GetProcAddress",
+        b"LdrLoadDll",
+        b"LdrGetProcedureAddress",
+        b"NtDelayExecution",
+        b"NtQueryInformationProcess",
+        b"ExitProcess",
+    ];
+    let mut bytes = parity_dynamic_pe64();
+    bytes[0x200..0x800].fill(0);
+    bytes[0x800..0xc00].fill(0);
+    put_u32(&mut bytes, 0x88, 0x66aa_6412);
+    let optional = 0x98;
+    put_u32(&mut bytes, optional + 120, 0x2000);
+    put_u32(&mut bytes, optional + 124, 0x28);
+    put_u32(&mut bytes, optional + 136, 0);
+    put_u32(&mut bytes, optional + 140, 0);
+    put_u32(&mut bytes, optional + 208, IAT_RVA);
+    put_u32(&mut bytes, optional + 212, ((imports.len() + 1) * 8) as u32);
+
+    let mut code = Vec::new();
+    code.extend_from_slice(&[0x48, 0x83, 0xec, 0x78]);
+    mov_imm64(&mut code, 1, u64::MAX);
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(BASE_RVA));
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, IMAGE_BASE + u64::from(SIZE_RVA));
+    stack_imm32(&mut code, 0x20, 0x3000);
+    stack_imm32(&mut code, 0x28, 0x04);
+    call_iat(&mut code, 0);
+    load_r12_rip(&mut code, BASE_RVA);
+
+    code.extend_from_slice(&[0x4c, 0x89, 0xe1]); // mov rcx,r12
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(STAGE_RVA));
+    mov_imm64(&mut code, 8, 64);
+    call_iat(&mut code, 1);
+
+    mov_imm64(&mut code, 1, u64::MAX);
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(BASE_RVA));
+    mov_imm64(&mut code, 8, IMAGE_BASE + u64::from(SIZE_RVA));
+    mov_imm64(&mut code, 9, 0x40);
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(OLD_PROTECT_RVA));
+    code.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x20]);
+    mov_imm64(&mut code, 1, u64::MAX);
+    call_iat(&mut code, 2);
+
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(MODULE_RVA));
+    call_iat(&mut code, 3);
+    code.extend_from_slice(&[0x49, 0x89, 0xc5]); // mov r13,rax
+    code.extend_from_slice(&[0x4c, 0x89, 0xe9]); // mov rcx,r13
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(SYMBOL_RVA));
+    call_iat(&mut code, 4);
+    // Resolve the same export twice: Windows returns a stable address, and the
+    // emulator must reuse its existing stub rather than consuming another slot.
+    code.extend_from_slice(&[0x4c, 0x89, 0xe9]); // mov rcx,r13
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(SYMBOL_RVA));
+    call_iat(&mut code, 4);
+    code.extend_from_slice(&[0x49, 0x89, 0xc6]); // mov r14,rax
+
+    mov_imm64(&mut code, 1, 0);
+    mov_imm64(&mut code, 2, 0);
+    mov_imm64(&mut code, 8, IMAGE_BASE + u64::from(UNICODE_DESCRIPTOR_RVA));
+    mov_imm64(&mut code, 9, IMAGE_BASE + u64::from(MODULE_OUTPUT_RVA));
+    call_iat(&mut code, 5);
+    load_rcx_rip(&mut code, MODULE_OUTPUT_RVA);
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(ANSI_DESCRIPTOR_RVA));
+    mov_imm64(&mut code, 8, 0);
+    mov_imm64(&mut code, 9, IMAGE_BASE + u64::from(API_OUTPUT_RVA));
+    call_iat(&mut code, 6);
+    load_rax_rip(&mut code, API_OUTPUT_RVA);
+    code.extend_from_slice(&[0xff, 0xd0]); // call dynamically resolved GetCurrentProcessId
+
+    mov_imm64(&mut code, 1, 0);
+    mov_imm64(&mut code, 2, IMAGE_BASE + u64::from(DELAY_RVA));
+    call_iat(&mut code, 7);
+
+    mov_imm64(&mut code, 1, u64::MAX);
+    mov_imm64(&mut code, 2, 0);
+    mov_imm64(&mut code, 8, IMAGE_BASE + u64::from(QUERY_OUTPUT_RVA));
+    mov_imm64(&mut code, 9, 16);
+    mov_imm64(&mut code, 1, IMAGE_BASE + u64::from(QUERY_LENGTH_RVA));
+    code.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x20]);
+    mov_imm64(&mut code, 1, u64::MAX);
+    call_iat(&mut code, 8);
+
+    code.extend_from_slice(&[0x4c, 0x89, 0xf1]); // mov rcx,r14
+    code.extend_from_slice(&[0x49, 0x8d, 0x44, 0x24, 0x20]); // lea rax,[r12+20h]
+    code.extend_from_slice(&[0xff, 0xd0]); // call rax
+    mov_imm64(&mut code, 1, 0);
+    call_iat(&mut code, 9);
+    code.push(0xf4);
+    assert!(code.len() < (MODULE_RVA - CODE_RVA) as usize);
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+
+    write_c_string(&mut bytes, 0x700, b"KERNEL32.dll");
+    write_c_string(&mut bytes, 0x720, b"GetTickCount");
+    let mut stage = [0u8; 64];
+    stage[..19].copy_from_slice(b"MZ AEGIS_UNPACKED\0\0");
+    stage[0x20..0x2b].copy_from_slice(&[
+        0x48, 0x83, 0xec, 0x28, 0xff, 0xd1, 0x48, 0x83, 0xc4, 0x28, 0xc3,
+    ]);
+    bytes[0x740..0x780].copy_from_slice(&stage);
+    bytes[0x780..0x788].copy_from_slice(&(-250_000i64).to_le_bytes());
+    bytes[0x788..0x790].copy_from_slice(&0u64.to_le_bytes());
+    bytes[0x790..0x798].copy_from_slice(&0x1000u64.to_le_bytes());
+    bytes[0x798..0x79c].copy_from_slice(&0u32.to_le_bytes());
+    let module_wide: Vec<u8> = "KERNEL32.dll"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    put_u16(&mut bytes, 0x7a0, module_wide.len() as u16);
+    put_u16(&mut bytes, 0x7a2, module_wide.len() as u16 + 2);
+    put_u64(
+        &mut bytes,
+        0x7a8,
+        IMAGE_BASE + u64::from(UNICODE_BUFFER_RVA),
+    );
+    bytes[0x7b0..0x7b0 + module_wide.len()].copy_from_slice(&module_wide);
+    let native_symbol = b"GetCurrentProcessId";
+    put_u16(&mut bytes, 0x7e0, native_symbol.len() as u16);
+    put_u16(&mut bytes, 0x7e2, native_symbol.len() as u16 + 1);
+    put_u64(&mut bytes, 0x7e8, IMAGE_BASE + u64::from(ANSI_BUFFER_RVA));
+    bytes[0x7c8..0x7c8 + native_symbol.len()].copy_from_slice(native_symbol);
+
+    put_u32(&mut bytes, 0x800, LOOKUP_RVA);
+    let mut name_raw = 0x980usize;
+    let mut name_rvas = Vec::new();
+    for import in imports {
+        let rva = 0x2000 + (name_raw - 0x800) as u32;
+        name_rvas.push(rva);
+        write_hint_name(&mut bytes, name_raw, import);
+        name_raw = (name_raw + import.len() + 3) & !1;
+    }
+    let dll_rva = 0x2000 + (name_raw - 0x800) as u32;
+    write_c_string(&mut bytes, name_raw, b"KERNEL32.dll");
+    put_u32(&mut bytes, 0x80c, dll_rva);
+    put_u32(&mut bytes, 0x810, IAT_RVA);
+    for (index, name_rva) in name_rvas.into_iter().enumerate() {
+        put_u64(&mut bytes, 0x840 + index * 8, u64::from(name_rva));
+        put_u64(&mut bytes, 0x8e0 + index * 8, u64::from(name_rva));
+    }
+    bytes
+}
+
 pub fn dynamic_resolution_pe32() -> Vec<u8> {
     let mut bytes = safe_dynamic_pe32();
     let code = [

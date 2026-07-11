@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 13;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 14;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -547,6 +547,9 @@ pub struct PayloadGeneration {
     pub executed: bool,
     pub entry_point_overwrite: bool,
     pub executable_heap: bool,
+    pub entry_point_candidate: Option<u64>,
+    pub first_execution_instruction: Option<u64>,
+    pub reconstructed_imports: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -554,6 +557,8 @@ pub struct GenerationStats {
     pub count: usize,
     pub chains: usize,
     pub executed_generations: usize,
+    pub entry_point_candidates: usize,
+    pub reconstructed_imports: usize,
     pub truncated: bool,
 }
 

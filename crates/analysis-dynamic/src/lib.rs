@@ -134,7 +134,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 13);
+        assert_eq!(report.schema_version, 14);
         assert_eq!(report.snapshots.first().unwrap().trigger, "entry");
         assert_eq!(report.snapshots.last().unwrap().trigger, "final");
         assert!(
@@ -188,7 +188,7 @@ mod tests {
                 .iter()
                 .any(|event| event.address == 0x0000_0001_4000_1150)
         );
-        assert_eq!(report.schema_version, 13);
+        assert_eq!(report.schema_version, 14);
     }
 
     #[test]
@@ -329,6 +329,73 @@ mod tests {
         }
         let repeated = analyze_dynamic(
             "aegis-safe-parity-pe64.exe",
+            &bytes,
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(report).unwrap(),
+            serde_json::to_string(&repeated).unwrap()
+        );
+    }
+
+    #[test]
+    fn pe64_unpacks_generated_code_and_reconstructs_dynamic_imports() {
+        let bytes = fixture::unpacking_dynamic_pe64();
+        let analysis = analyze_dynamic_with_artifacts(
+            "aegis-safe-unpacking-pe64.exe",
+            &bytes,
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        let report = &analysis.report;
+        assert!(matches!(
+            report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert_eq!(report.schema_version, 14);
+        assert_eq!(report.coverage.dynamic_api_resolutions, 2);
+        assert_eq!(report.virtual_time_ms, 1_000_025);
+        assert!(
+            report
+                .api_calls
+                .iter()
+                .any(|event| event.name == "GetTickCount")
+        );
+        assert!(
+            report
+                .api_calls
+                .iter()
+                .any(|event| event.name == "GetCurrentProcessId")
+        );
+        let generation = report
+            .payload_generations
+            .iter()
+            .find(|generation| generation.entry_point_candidate.is_some())
+            .expect("generated executable stage");
+        assert_eq!(
+            generation.entry_point_candidate,
+            Some(0x0000_0050_0000_0020)
+        );
+        assert_eq!(
+            generation.reconstructed_imports,
+            ["KERNEL32.dll!GetTickCount"]
+        );
+        assert!(generation.executed);
+        assert!(generation.executable_heap);
+        assert!(report.generation_stats.entry_point_candidates >= 1);
+        assert_eq!(report.generation_stats.reconstructed_imports, 1);
+        assert!(report.artifacts.iter().any(|artifact| {
+            artifact.address == Some(0x0000_0050_0000_0000) && artifact.detected_format == "pe"
+        }));
+        assert!(report.system.iter().any(|event| {
+            event.operation == "resolve_export" && event.target.contains("GetTickCount")
+        }));
+        assert!(report.system.iter().any(|event| {
+            event.operation == "resolve_export" && event.target.contains("GetCurrentProcessId")
+        }));
+        let repeated = analyze_dynamic(
+            "aegis-safe-unpacking-pe64.exe",
             &bytes,
             &DynamicOptions::default(),
         )

@@ -135,7 +135,17 @@ impl Memory64 {
         ))
     }
 
+    pub fn read_u16(&self, address: u64) -> Result<u16, DynamicError> {
+        Ok(u16::from_le_bytes(
+            self.read(address, 2)?.try_into().unwrap(),
+        ))
+    }
+
     pub fn write_u64(&mut self, address: u64, value: u64) -> Result<(), DynamicError> {
+        self.write(address, &value.to_le_bytes())
+    }
+
+    pub fn write_u32(&mut self, address: u64, value: u32) -> Result<(), DynamicError> {
         self.write(address, &value.to_le_bytes())
     }
 
@@ -148,6 +158,21 @@ impl Memory64 {
             }
         }
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    pub fn read_wide_string(&self, address: u64, maximum: usize) -> String {
+        let mut units = Vec::new();
+        for offset in 0..maximum {
+            let pointer = address.saturating_add((offset * 2) as u64);
+            let Ok(unit) = self.read_u16(pointer) else {
+                break;
+            };
+            if unit == 0 {
+                break;
+            }
+            units.push(unit);
+        }
+        String::from_utf16_lossy(&units)
     }
 
     pub fn set_permissions(
@@ -227,5 +252,21 @@ mod tests {
             ),
             Err(DynamicError::MemoryLimit)
         ));
+    }
+
+    #[test]
+    fn reads_bounded_utf16_strings_from_sparse_guest_memory() {
+        let mut memory = Memory64::default();
+        let address = 0x0000_0001_5000_0000;
+        memory
+            .map(address, 0x1000, Permissions::READ_WRITE, "wide string")
+            .unwrap();
+        let bytes: Vec<u8> = "KERNEL32.dll\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        memory.write(address, &bytes).unwrap();
+        assert_eq!(memory.read_wide_string(address, 260), "KERNEL32.dll");
+        assert_eq!(memory.read_wide_string(address, 6), "KERNEL");
     }
 }
