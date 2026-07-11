@@ -75,3 +75,5 @@ The production app has no telemetry, third-party assets, reputation lookups, or
 automatic persistence. See the security model before analyzing hostile samples.
 
 Licensed under MIT.
+
+Live app: <https://chaitanyarahalkar.github.io/aegis-browser-triage/>

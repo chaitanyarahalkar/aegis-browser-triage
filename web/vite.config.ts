@@ -10,6 +10,7 @@ const productionHeaders = {
 }
 
 export default defineConfig(({ command }) => ({
+  base: './',
   plugins: [react()],
   server: {
     headers: command === 'serve' ? {

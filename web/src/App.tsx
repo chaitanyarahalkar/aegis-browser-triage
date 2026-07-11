@@ -95,7 +95,7 @@ export default function App() {
 
   const analyzeDemo = useCallback(async () => {
     try {
-      const response = await fetch('/fixtures/aegis-safe-dynamic-pe32.exe')
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/aegis-safe-dynamic-pe32.exe`)
       if (!response.ok) throw new Error('Safe fixture could not be loaded')
       const bytes = await response.arrayBuffer()
       await inspectFile(new File([bytes], 'aegis-safe-dynamic-pe32.exe', { type: 'application/octet-stream' }))
