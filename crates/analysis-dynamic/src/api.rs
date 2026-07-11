@@ -46,6 +46,14 @@ pub fn signature(name: &str) -> ApiSignature {
         | "globalfree"
         | "heapdestroy"
         | "setlasterror" => (1, true),
+        "releasemutex"
+        | "setevent"
+        | "resetevent"
+        | "findclose"
+        | "cryptdestroyhash"
+        | "cryptreleasecontext"
+        | "unmapviewoffile"
+        | "lockresource" => (1, true),
         "winexec"
         | "getprocaddress"
         | "virtualfree"
@@ -53,19 +61,51 @@ pub fn signature(name: &str) -> ApiSignature {
         | "globalalloc"
         | "checkremotedebuggerpresent"
         | "addvectoredexceptionhandler" => (2, true),
+        "waitforsingleobject"
+        | "findfirstfilea"
+        | "findfirstfilew"
+        | "findnextfilea"
+        | "findnextfilew"
+        | "createtoolhelp32snapshot"
+        | "process32firsta"
+        | "process32firstw"
+        | "process32nexta"
+        | "process32nextw"
+        | "loadresource"
+        | "sizeofresource" => (2, true),
+        "connectnamedpipe" => (2, true),
         "virtualprotect"
         | "connect"
         | "heapfree"
         | "getenvironmentvariablea"
         | "getenvironmentvariablew" => (3, true),
+        "createmutexa"
+        | "createmutexw"
+        | "openmutexa"
+        | "openmutexw"
+        | "openeventa"
+        | "openeventw"
+        | "openprocesstoken"
+        | "lookupprivilegevaluea"
+        | "lookupprivilegevaluew"
+        | "findresourcea"
+        | "findresourcew" => (3, true),
         "virtualalloc" | "send" | "recv" => (4, true),
         "raiseexception" => (4, true),
+        "createeventa" | "createeventw" | "crypthashdata" => (4, true),
         "heapalloc" => (3, true),
         "regopenkeyexa" | "regopenkeyexw" | "internetopena" | "internetopenw" | "writefile"
         | "readfile" => (5, true),
+        "mapviewoffile"
+        | "cryptacquirecontexta"
+        | "cryptacquirecontextw"
+        | "cryptcreatehash"
+        | "cryptgethashparam" => (5, true),
         "regsetvalueexa" | "regsetvalueexw" | "internetopenurla" | "internetopenurlw" => (6, true),
         "createthread" => (6, true),
+        "createfilemappinga" | "createfilemappingw" | "adjusttokenprivileges" => (6, true),
         "createfilea" | "createfilew" => (7, true),
+        "createnamedpipea" | "createnamedpipew" => (8, true),
         "createprocessa" | "createprocessw" => (10, true),
         "openprocess" | "queueuserapc" => (3, true),
         "virtualallocex"

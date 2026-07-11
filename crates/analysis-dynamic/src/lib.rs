@@ -121,7 +121,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 8);
+        assert_eq!(report.schema_version, 9);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -323,6 +323,39 @@ mod tests {
                 "missing {mnemonic}"
             );
         }
+    }
+
+    #[test]
+    fn runs_stateful_system_object_fixture() {
+        let report = analyze_dynamic(
+            "system.exe",
+            &fixture::system_objects_pe32(),
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert!(
+            report
+                .system
+                .iter()
+                .any(|event| event.operation == "create_event")
+        );
+        let waits: Vec<_> = report
+            .system
+            .iter()
+            .filter(|event| event.operation == "wait")
+            .map(|event| event.result)
+            .collect();
+        assert_eq!(waits, [0x102, 0]);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.id == "system-objects")
+        );
     }
 
     #[test]

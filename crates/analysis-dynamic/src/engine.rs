@@ -3,8 +3,8 @@ use crate::{
     DynamicOptions, DynamicReport, DynamicSeverity, ExceptionEvent, ExecutionCoverage,
     ExecutionDiagnostics, ExecutionProfile, FileEvent, HARD_MAX_API_EVENTS, InjectionEvent,
     InstructionDiagnostic, InstructionEvent, MemoryEvent, NetworkEvent, NetworkMode,
-    PersistenceEvent, ProcessEvent, RegistryEvent, Termination, ThreadEvent, ThreadSummary,
-    TimelineEvent,
+    PersistenceEvent, ProcessEvent, RegistryEvent, SystemEvent, Termination, ThreadEvent,
+    ThreadSummary, TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
     cpu::Cpu,
@@ -36,6 +36,7 @@ const MAX_EXCEPTION_EVENTS: usize = 128;
 const MAX_SEH_DEPTH: usize = 16;
 const MAX_GUEST_THREADS: usize = 64;
 const MAX_THREAD_EVENTS: usize = 4_096;
+const MAX_SYSTEM_EVENTS: usize = 4_096;
 const THREAD_QUANTUM: u64 = 100;
 const THREAD_STACK_SIZE: usize = 64 * 1024;
 
@@ -149,6 +150,7 @@ pub(crate) fn run(
             exit_code: None,
         }],
         thread_events: Vec::new(),
+        system: Vec::new(),
         current_thread: 0,
         thread_exit_requested: None,
         next_thread_switch: THREAD_QUANTUM,
@@ -232,6 +234,7 @@ pub(crate) fn run(
             .map(GuestThread::summary)
             .collect(),
         thread_events: machine.thread_events,
+        system: machine.system,
         artifacts: artifact_summaries,
         artifact_stats,
         payload_generations,
@@ -297,6 +300,7 @@ struct Machine {
     queued_exception: Option<(u32, String)>,
     thread_states: Vec<GuestThread>,
     thread_events: Vec<ThreadEvent>,
+    system: Vec<SystemEvent>,
     current_thread: usize,
     thread_exit_requested: Option<u32>,
     next_thread_switch: u64,
@@ -1977,6 +1981,7 @@ impl Machine {
             self.memory_events.len(),
             self.injection.len(),
             self.persistence.len(),
+            self.system.len(),
         );
         let (result, summary, display_args) = self.emulate_api(&lower, &args)?;
         self.cpu.eax = result;
@@ -2025,7 +2030,7 @@ impl Machine {
         &self,
         api: &str,
         summary: &str,
-        before: (usize, usize, usize, usize, usize, usize, usize),
+        before: (usize, usize, usize, usize, usize, usize, usize, usize),
     ) -> (String, String, String) {
         if self.processes.len() > before.0 {
             let event = self.processes.last().expect("process event was appended");
@@ -2088,6 +2093,14 @@ impl Machine {
                 .expect("persistence event was appended");
             return (
                 "persistence".into(),
+                event.operation.clone(),
+                event.target.clone(),
+            );
+        }
+        if self.system.len() > before.7 {
+            let event = self.system.last().expect("system event was appended");
+            return (
+                event.category.clone(),
                 event.operation.clone(),
                 event.target.clone(),
             );
@@ -3611,6 +3624,501 @@ impl Machine {
                 },
                 hex_args(),
             )),
+            "createmutexa" | "createmutexw" => {
+                let wide = name.ends_with('w');
+                let pointer = args.get(2).copied().unwrap_or(0);
+                let object = if wide {
+                    self.memory.read_wide_string(pointer, 256)
+                } else {
+                    self.memory.read_c_string(pointer, 256)
+                };
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Mutex {
+                        name: object.clone(),
+                        owned: args.get(1).copied().unwrap_or(0) != 0,
+                    })
+                    .unwrap_or(0);
+                self.record_system(
+                    "synchronization",
+                    "create_mutex",
+                    &object,
+                    "bounded kernel object",
+                    handle,
+                );
+                Ok((
+                    handle,
+                    format!("Created synthetic mutex {object}"),
+                    vec![object],
+                ))
+            }
+            "openmutexa" | "openmutexw" => {
+                let wide = name.ends_with('w');
+                let pointer = args.get(2).copied().unwrap_or(0);
+                let object = if wide {
+                    self.memory.read_wide_string(pointer, 256)
+                } else {
+                    self.memory.read_c_string(pointer, 256)
+                };
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Mutex {
+                        name: object.clone(),
+                        owned: false,
+                    })
+                    .unwrap_or(0);
+                self.record_system(
+                    "synchronization",
+                    "open_mutex",
+                    &object,
+                    "synthetic named mutex",
+                    handle,
+                );
+                Ok((
+                    handle,
+                    format!("Opened synthetic mutex {object}"),
+                    vec![object],
+                ))
+            }
+            "releasemutex" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let ok = self.windows.release_mutex(handle);
+                self.record_system(
+                    "synchronization",
+                    "release_mutex",
+                    &format!("0x{handle:08x}"),
+                    "released ownership",
+                    u32::from(ok),
+                );
+                Ok((u32::from(ok), "Released synthetic mutex".into(), hex_args()))
+            }
+            "createeventa" | "createeventw" => {
+                let wide = name.ends_with('w');
+                let pointer = args.get(3).copied().unwrap_or(0);
+                let object = if wide {
+                    self.memory.read_wide_string(pointer, 256)
+                } else {
+                    self.memory.read_c_string(pointer, 256)
+                };
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Event {
+                        name: object.clone(),
+                        manual_reset: args.get(1).copied().unwrap_or(0) != 0,
+                        signaled: args.get(2).copied().unwrap_or(0) != 0,
+                    })
+                    .unwrap_or(0);
+                self.record_system(
+                    "synchronization",
+                    "create_event",
+                    &object,
+                    "bounded kernel object",
+                    handle,
+                );
+                Ok((
+                    handle,
+                    format!("Created synthetic event {object}"),
+                    vec![object],
+                ))
+            }
+            "openeventa" | "openeventw" => {
+                let wide = name.ends_with('w');
+                let pointer = args.get(2).copied().unwrap_or(0);
+                let object = if wide {
+                    self.memory.read_wide_string(pointer, 256)
+                } else {
+                    self.memory.read_c_string(pointer, 256)
+                };
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Event {
+                        name: object.clone(),
+                        manual_reset: false,
+                        signaled: false,
+                    })
+                    .unwrap_or(0);
+                self.record_system(
+                    "synchronization",
+                    "open_event",
+                    &object,
+                    "synthetic named event",
+                    handle,
+                );
+                Ok((
+                    handle,
+                    format!("Opened synthetic event {object}"),
+                    vec![object],
+                ))
+            }
+            "setevent" | "resetevent" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let signaled = name == "setevent";
+                let ok = self.windows.signal_event(handle, signaled);
+                self.record_system(
+                    "synchronization",
+                    if signaled { "set_event" } else { "reset_event" },
+                    &format!("0x{handle:08x}"),
+                    if signaled { "signaled" } else { "reset" },
+                    u32::from(ok),
+                );
+                Ok((
+                    u32::from(ok),
+                    format!(
+                        "{} synthetic event",
+                        if signaled { "Signaled" } else { "Reset" }
+                    ),
+                    hex_args(),
+                ))
+            }
+            "waitforsingleobject" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let ready = self.windows.wait(handle);
+                let result = match ready {
+                    Some(true) => 0,
+                    Some(false) => 0x102,
+                    None => u32::MAX,
+                };
+                self.record_system(
+                    "synchronization",
+                    "wait",
+                    &format!("0x{handle:08x}"),
+                    if result == 0 {
+                        "signaled"
+                    } else {
+                        "timeout or invalid"
+                    },
+                    result,
+                );
+                Ok((
+                    result,
+                    "Completed deterministic object wait".into(),
+                    hex_args(),
+                ))
+            }
+            "findfirstfilea" | "findfirstfilew" | "findnextfilea" | "findnextfilew" => {
+                let wide = name.ends_with('w');
+                let output = args.get(1).copied().unwrap_or(0);
+                let (result, entry) = if name.starts_with("findfirst") {
+                    let pointer = args.first().copied().unwrap_or(0);
+                    let pattern = if wide {
+                        self.memory.read_wide_string(pointer, 512)
+                    } else {
+                        self.memory.read_c_string(pointer, 512)
+                    };
+                    self.windows
+                        .start_file_find(&pattern)
+                        .map_or((u32::MAX, None), |(handle, entry)| (handle, Some(entry)))
+                } else {
+                    let handle = args.first().copied().unwrap_or(0);
+                    let entry = self.windows.next_file_find(handle);
+                    (u32::from(entry.is_some()), entry)
+                };
+                if let Some(entry) = entry.as_deref() {
+                    self.write_find_data(output, entry, wide);
+                }
+                self.record_system(
+                    "enumeration",
+                    "file",
+                    entry.as_deref().unwrap_or("no match"),
+                    "virtual filesystem enumeration",
+                    result,
+                );
+                Ok((
+                    result,
+                    "Enumerated bounded virtual files".into(),
+                    entry.into_iter().collect(),
+                ))
+            }
+            "findclose" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let ok = self.windows.close(handle);
+                Ok((u32::from(ok), "Closed file enumeration".into(), hex_args()))
+            }
+            "createtoolhelp32snapshot" => {
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Snapshot { index: 0 })
+                    .unwrap_or(u32::MAX);
+                self.record_system(
+                    "enumeration",
+                    "process_snapshot",
+                    "synthetic process list",
+                    "3 deterministic processes",
+                    handle,
+                );
+                Ok((
+                    handle,
+                    "Created synthetic process snapshot".into(),
+                    hex_args(),
+                ))
+            }
+            "process32firsta" | "process32firstw" | "process32nexta" | "process32nextw" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let output = args.get(1).copied().unwrap_or(0);
+                let reset = name.starts_with("process32first");
+                let value = self.windows.next_process(handle, reset);
+                if let Some((pid, process)) = value {
+                    self.write_process_entry(output, pid, process, name.ends_with('w'));
+                    self.record_system("enumeration", "process", process, &format!("pid {pid}"), 1);
+                }
+                Ok((
+                    u32::from(value.is_some()),
+                    "Enumerated synthetic process".into(),
+                    value
+                        .map(|(pid, process)| vec![pid.to_string(), process.into()])
+                        .unwrap_or_default(),
+                ))
+            }
+            "openprocesstoken" => {
+                let pid = args.first().copied().unwrap_or(1337);
+                let output = args.get(2).copied().unwrap_or(0);
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Token { pid })
+                    .unwrap_or(0);
+                if output != 0 {
+                    let _ = self.memory.write_u32(output, handle);
+                }
+                self.record_system(
+                    "token",
+                    "open",
+                    &format!("process {pid}"),
+                    "synthetic restricted token",
+                    handle,
+                );
+                Ok((
+                    u32::from(handle != 0),
+                    "Opened synthetic process token".into(),
+                    hex_args(),
+                ))
+            }
+            "lookupprivilegevaluea" | "lookupprivilegevaluew" => {
+                let output = args.get(2).copied().unwrap_or(0);
+                if output != 0 {
+                    let _ = self.memory.write_u32(output, 20);
+                    let _ = self.memory.write_u32(output + 4, 0);
+                }
+                self.record_system(
+                    "token",
+                    "lookup_privilege",
+                    "synthetic LUID",
+                    "host privileges unavailable",
+                    1,
+                );
+                Ok((1, "Returned synthetic privilege LUID".into(), hex_args()))
+            }
+            "adjusttokenprivileges" => {
+                self.record_system(
+                    "token",
+                    "adjust_privileges",
+                    "synthetic token",
+                    "recorded only; no host privilege changed",
+                    1,
+                );
+                Ok((1, "Recorded synthetic token adjustment".into(), hex_args()))
+            }
+            "createfilemappinga" | "createfilemappingw" => {
+                let wide = name.ends_with('w');
+                let pointer = args.get(5).copied().unwrap_or(0);
+                let object = if wide {
+                    self.memory.read_wide_string(pointer, 256)
+                } else {
+                    self.memory.read_c_string(pointer, 256)
+                };
+                let size = args
+                    .get(4)
+                    .copied()
+                    .unwrap_or(0)
+                    .clamp(4096, 4 * 1024 * 1024) as usize;
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Mapping {
+                        name: object.clone(),
+                        size,
+                    })
+                    .unwrap_or(0);
+                self.record_system(
+                    "mapping",
+                    "create",
+                    &object,
+                    &format!("{size} bytes"),
+                    handle,
+                );
+                Ok((
+                    handle,
+                    "Created synthetic file mapping".into(),
+                    vec![object, size.to_string()],
+                ))
+            }
+            "mapviewoffile" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let size = self.windows.mapping_size(handle).unwrap_or(0);
+                let (address, _, _) = if size == 0 {
+                    (0, String::new(), Vec::new())
+                } else {
+                    self.virtual_alloc(&[0, size as u32, 0x1000, 0x04])?
+                };
+                self.record_system(
+                    "mapping",
+                    "map_view",
+                    &format!("0x{handle:08x}"),
+                    &format!("{size} bytes"),
+                    address,
+                );
+                Ok((
+                    address,
+                    "Mapped synthetic shared-memory view".into(),
+                    hex_args(),
+                ))
+            }
+            "unmapviewoffile" => {
+                self.heap_free(args.first().copied().unwrap_or(0), "UnmapViewOfFile")
+            }
+            "createnamedpipea" | "createnamedpipew" => {
+                let wide = name.ends_with('w');
+                let pointer = args.first().copied().unwrap_or(0);
+                let path = if wide {
+                    self.memory.read_wide_string(pointer, 512)
+                } else {
+                    self.memory.read_c_string(pointer, 512)
+                };
+                let handle = self.windows.open_file(path.clone()).unwrap_or(0);
+                self.record_system("pipe", "create", &path, "in-memory named pipe", handle);
+                Ok((handle, "Created synthetic named pipe".into(), vec![path]))
+            }
+            "connectnamedpipe" => {
+                let handle = args.first().copied().unwrap_or(0);
+                self.record_system(
+                    "pipe",
+                    "connect",
+                    &format!("0x{handle:08x}"),
+                    "synthetic client connected",
+                    1,
+                );
+                Ok((1, "Connected synthetic named pipe".into(), hex_args()))
+            }
+            "cryptacquirecontexta" | "cryptacquirecontextw" => {
+                let output = args.first().copied().unwrap_or(0);
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::CryptoProvider)
+                    .unwrap_or(0);
+                if output != 0 {
+                    let _ = self.memory.write_u32(output, handle);
+                }
+                self.record_system(
+                    "crypto",
+                    "acquire",
+                    "provider",
+                    "local deterministic provider",
+                    handle,
+                );
+                Ok((
+                    u32::from(handle != 0),
+                    "Acquired synthetic crypto provider".into(),
+                    hex_args(),
+                ))
+            }
+            "cryptcreatehash" => {
+                let output = args.get(4).copied().unwrap_or(0);
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::CryptoHash { data: Vec::new() })
+                    .unwrap_or(0);
+                if output != 0 {
+                    let _ = self.memory.write_u32(output, handle);
+                }
+                self.record_system(
+                    "crypto",
+                    "create_hash",
+                    "SHA-256",
+                    "bounded 4 MiB input",
+                    handle,
+                );
+                Ok((
+                    u32::from(handle != 0),
+                    "Created synthetic SHA-256 hash".into(),
+                    hex_args(),
+                ))
+            }
+            "crypthashdata" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let pointer = args.get(1).copied().unwrap_or(0);
+                let length = args.get(2).copied().unwrap_or(0).min(4 * 1024 * 1024) as usize;
+                let data = self
+                    .memory
+                    .read(pointer, length)
+                    .unwrap_or_default()
+                    .to_vec();
+                let ok = self.windows.hash_update(handle, &data);
+                self.record_system(
+                    "crypto",
+                    "hash_data",
+                    &format!("0x{handle:08x}"),
+                    &format!("{length} bytes"),
+                    u32::from(ok),
+                );
+                Ok((
+                    u32::from(ok),
+                    "Hashed bounded guest data".into(),
+                    hex_args(),
+                ))
+            }
+            "cryptgethashparam" => {
+                let handle = args.first().copied().unwrap_or(0);
+                let output = args.get(2).copied().unwrap_or(0);
+                let size_pointer = args.get(3).copied().unwrap_or(0);
+                let digest = self
+                    .windows
+                    .hash_bytes(handle)
+                    .map(|data| Sha256::digest(data).to_vec())
+                    .unwrap_or_default();
+                if output != 0 {
+                    let _ = self.memory.write(output, &digest);
+                }
+                if size_pointer != 0 {
+                    let _ = self.memory.write_u32(size_pointer, digest.len() as u32);
+                }
+                Ok((
+                    u32::from(!digest.is_empty()),
+                    "Returned synthetic SHA-256 digest".into(),
+                    hex_args(),
+                ))
+            }
+            "cryptdestroyhash" | "cryptreleasecontext" => {
+                let ok = self.windows.close(args.first().copied().unwrap_or(0));
+                Ok((
+                    u32::from(ok),
+                    "Released synthetic crypto handle".into(),
+                    hex_args(),
+                ))
+            }
+            "findresourcea" | "findresourcew" | "loadresource" => {
+                let handle = self
+                    .windows
+                    .allocate(HandleResource::Module {
+                        name: "synthetic resource".into(),
+                    })
+                    .unwrap_or(0);
+                self.record_system(
+                    "resource",
+                    name,
+                    "PE resource",
+                    "metadata-only synthetic handle",
+                    handle,
+                );
+                Ok((
+                    handle,
+                    "Returned synthetic resource handle".into(),
+                    hex_args(),
+                ))
+            }
+            "lockresource" => Ok((
+                0,
+                "Synthetic resource has no host-backed bytes".into(),
+                hex_args(),
+            )),
+            "sizeofresource" => Ok((0, "Synthetic resource size is zero".into(), hex_args())),
             "closehandle" | "regclosekey" | "internetclosehandle" => {
                 let handle = args.first().copied().unwrap_or(0);
                 let description = self
@@ -3639,6 +4147,68 @@ impl Machine {
                     hex_args(),
                 ))
             }
+        }
+    }
+
+    fn record_system(
+        &mut self,
+        category: &str,
+        operation: &str,
+        target: &str,
+        detail: &str,
+        result: u32,
+    ) {
+        if self.system.len() >= MAX_SYSTEM_EVENTS {
+            self.truncated = true;
+            return;
+        }
+        self.system.push(SystemEvent {
+            category: category.into(),
+            operation: operation.into(),
+            target: target.into(),
+            detail: detail.into(),
+            result,
+        });
+    }
+
+    fn write_find_data(&mut self, output: u32, path: &str, wide: bool) {
+        if output == 0 {
+            return;
+        }
+        let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
+        let _ = self.memory.write_u32(output, 0x80);
+        if wide {
+            let bytes: Vec<_> = name
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(u16::to_le_bytes)
+                .take(520)
+                .collect();
+            let _ = self.memory.write(output + 44, &bytes);
+        } else {
+            let mut bytes = name.as_bytes()[..name.len().min(259)].to_vec();
+            bytes.push(0);
+            let _ = self.memory.write(output + 44, &bytes);
+        }
+    }
+
+    fn write_process_entry(&mut self, output: u32, pid: u32, name: &str, wide: bool) {
+        if output == 0 {
+            return;
+        }
+        let _ = self.memory.write_u32(output, if wide { 568 } else { 296 });
+        let _ = self.memory.write_u32(output + 8, pid);
+        if wide {
+            let bytes: Vec<_> = name
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            let _ = self.memory.write(output + 36, &bytes);
+        } else {
+            let mut bytes = name.as_bytes().to_vec();
+            bytes.push(0);
+            let _ = self.memory.write(output + 36, &bytes);
         }
     }
 
@@ -3992,6 +4562,9 @@ impl Machine {
         if self.thread_states.len() > 1 {
             findings.push(DynamicFinding { id: "guest-threads".into(), title: "Guest thread execution observed".into(), severity: DynamicSeverity::Medium, rationale: "Created threads were scheduled deterministically with isolated registers, stacks, and synthetic TEBs over shared guest memory.".into(), evidence: self.thread_states.iter().skip(1).map(|thread| format!("thread {} start 0x{:08x} · {} instructions", thread.tid, thread.start_address, thread.instruction_count)).collect() });
         }
+        if !self.system.is_empty() {
+            findings.push(DynamicFinding { id: "system-objects".into(), title: "Windows system-object activity observed".into(), severity: DynamicSeverity::Low, rationale: "Synchronization, enumeration, token, mapping, pipe, resource, and crypto APIs used bounded synthetic state only.".into(), evidence: self.system.iter().take(20).map(|event| format!("{} {} {}", event.category, event.operation, event.target)).collect() });
+        }
         if findings.is_empty() {
             findings.push(DynamicFinding { id: "no-modeled-behavior".into(), title: "No modeled high-level behavior observed".into(), severity: DynamicSeverity::Info, rationale: "Execution may have completed, hit an unsupported instruction, or avoided the modeled APIs.".into(), evidence: vec![format!("{} instructions emulated", self.instruction_count)] });
         }
@@ -4185,6 +4758,7 @@ mod tests {
                 exit_code: None,
             }],
             thread_events: Vec::new(),
+            system: Vec::new(),
             current_thread: 0,
             thread_exit_requested: None,
             next_thread_switch: THREAD_QUANTUM,
@@ -4553,6 +5127,82 @@ mod tests {
                 .unwrap()
                 .bytes
                 .starts_with("6666")
+        );
+    }
+
+    #[test]
+    fn models_synchronization_objects_and_deterministic_waits() {
+        let mut machine = machine_with_code(&[0xf4]);
+        machine.memory.write(0x3000, b"AegisReady\0").unwrap();
+        let event = machine
+            .emulate_api("createeventa", &[0, 0, 1, 0x3000])
+            .unwrap()
+            .0;
+        assert_ne!(event, 0);
+        assert_eq!(
+            machine
+                .emulate_api("waitforsingleobject", &[event, 0])
+                .unwrap()
+                .0,
+            0
+        );
+        assert_eq!(
+            machine
+                .emulate_api("waitforsingleobject", &[event, 0])
+                .unwrap()
+                .0,
+            0x102
+        );
+        machine.emulate_api("setevent", &[event]).unwrap();
+        assert_eq!(
+            machine
+                .emulate_api("waitforsingleobject", &[event, 0])
+                .unwrap()
+                .0,
+            0
+        );
+        assert!(machine.system.iter().any(|event| event.operation == "wait"));
+    }
+
+    #[test]
+    fn models_process_enumeration_tokens_and_crypto_hashes() {
+        let mut machine = machine_with_code(&[0xf4]);
+        let snapshot = machine
+            .emulate_api("createtoolhelp32snapshot", &[2, 0])
+            .unwrap()
+            .0;
+        assert_eq!(
+            machine
+                .emulate_api("process32firsta", &[snapshot, 0x3000])
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(machine.memory.read_u32(0x3008).unwrap(), 4);
+        assert_eq!(machine.memory.read_c_string(0x3024, 32), "System");
+        machine
+            .emulate_api("openprocesstoken", &[1337, 0, 0x3200])
+            .unwrap();
+        assert_ne!(machine.memory.read_u32(0x3200).unwrap(), 0);
+        machine
+            .emulate_api("cryptacquirecontexta", &[0x3210, 0, 0, 0, 0])
+            .unwrap();
+        let provider = machine.memory.read_u32(0x3210).unwrap();
+        machine
+            .emulate_api("cryptcreatehash", &[provider, 0x800c, 0, 0, 0x3214])
+            .unwrap();
+        let hash = machine.memory.read_u32(0x3214).unwrap();
+        machine.memory.write(0x3300, b"aegis").unwrap();
+        machine
+            .emulate_api("crypthashdata", &[hash, 0x3300, 5, 0])
+            .unwrap();
+        machine
+            .emulate_api("cryptgethashparam", &[hash, 2, 0x3400, 0x3420, 0])
+            .unwrap();
+        assert_eq!(machine.memory.read_u32(0x3420).unwrap(), 32);
+        assert_eq!(
+            machine.memory.read(0x3400, 32).unwrap(),
+            Sha256::digest(b"aegis").as_slice()
         );
     }
 }

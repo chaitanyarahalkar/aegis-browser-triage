@@ -33,6 +33,8 @@ Dynamic reports currently include:
 - Typed Windows API signatures, ANSI/UTF-16 arguments, and deterministic virtual time
 - Stateful synthetic handles, files, registry values, processes, DNS, sockets,
   HTTP sessions, heaps, environment, and memory
+- Stateful mutexes/events and waits, file/process enumeration, restricted tokens,
+  shared mappings, named pipes, resources, and bounded SHA-256 crypto handles
 - Ordered behavior timeline and execution/API coverage metrics
 - Four deterministic Windows environment profiles with selectable single runs and
   a bounded profile-matrix comparison for environment-sensitive behavior

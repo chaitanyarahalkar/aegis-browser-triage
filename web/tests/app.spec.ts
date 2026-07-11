@@ -51,7 +51,7 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v8', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v9', { exact: true })).toBeVisible()
 })
 
 test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
@@ -149,7 +149,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(8)
+  expect(json.dynamic.schema_version).toBe(9)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')
@@ -243,6 +243,19 @@ test('executes extended integer, SSE2, and x87 instructions', async ({ page, isM
   await expect(page.locator('tbody')).toContainText('faddp')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('Invalid encodings').locator('..')).toContainText('0')
+})
+
+test('models bounded synthetic Windows system objects', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop system-object inspection workflow')
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Use system-object demo' }).click()
+  await expect(page.getByText('aegis-safe-system-objects-pe32.exe')).toBeVisible()
+  await runDynamic(page)
+  await page.getByRole('button', { name: 'System objects (4)' }).click()
+  await expect(page.getByRole('heading', { name: 'Synthetic Windows system objects' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'create event' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'timeout or invalid' })).toBeVisible()
+  await expect(page.getByRole('cell', { name: 'signaled', exact: true }).last()).toBeVisible()
 })
 
 test('does not contact third parties or persist sample data', async ({ page }) => {

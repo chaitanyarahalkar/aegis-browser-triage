@@ -215,6 +215,19 @@ export default function App() {
     }
   }, [inspectFile])
 
+  const analyzeSystemDemo = useCallback(async () => {
+    try {
+      const name = 'aegis-safe-system-objects-pe32.exe'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('System-object fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'System-object fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
   const runDynamicAnalysis = useCallback(async () => {
     if (!currentFile) return
     const run = ++dynamicRun.current
@@ -346,6 +359,7 @@ export default function App() {
               analyzeSehDemo={analyzeSehDemo}
               analyzeThreadsDemo={analyzeThreadsDemo}
               analyzeInstructionsDemo={analyzeInstructionsDemo}
+              analyzeSystemDemo={analyzeSystemDemo}
             />
             <div className="privacy-row">
               <span>No uploads</span>
@@ -413,7 +427,7 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
@@ -423,6 +437,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
   analyzeSehDemo: () => Promise<void>
   analyzeThreadsDemo: () => Promise<void>
   analyzeInstructionsDemo: () => Promise<void>
+  analyzeSystemDemo: () => Promise<void>
 }) {
   return (
     <div
@@ -448,6 +463,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button secondary" type="button" onClick={() => void analyzeSehDemo()}>Use SEH demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeThreadsDemo()}>Use threads demo</button>
         <button className="button secondary" type="button" onClick={() => void analyzeInstructionsDemo()}>Use instruction demo</button>
+        <button className="button secondary" type="button" onClick={() => void analyzeSystemDemo()}>Use system-object demo</button>
       </div>
       <input
         ref={inputRef}
@@ -629,7 +645,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'profiles'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
@@ -689,6 +705,7 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
         <button className={view === 'unpacking' ? 'active' : ''} type="button" onClick={() => setView('unpacking')}>Unpacking ({report.payload_generations.length})</button>
         <button className={view === 'exceptions' ? 'active' : ''} type="button" onClick={() => setView('exceptions')}>Exceptions ({report.exceptions.length})</button>
         <button className={view === 'threads' ? 'active' : ''} type="button" onClick={() => setView('threads')}>Threads ({report.threads.length})</button>
+        <button className={view === 'system' ? 'active' : ''} type="button" onClick={() => setView('system')}>System objects ({report.system.length})</button>
         {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
@@ -700,9 +717,15 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
       {view === 'unpacking' && <UnpackingView report={report} yara={artifactYara} status={artifactYaraStatus} onScan={onScanArtifacts} />}
       {view === 'exceptions' && <ExceptionView report={report} />}
       {view === 'threads' && <ThreadView report={report} />}
+      {view === 'system' && <SystemView report={report} />}
       {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
+}
+
+function SystemView({ report }: { report: DynamicReport }) {
+  if (!report.system.length) return <EmptyState title="No system-object activity" text="No synchronization, enumeration, token, mapping, pipe, resource, or crypto APIs were reached." />
+  return <Section title="Synthetic Windows system objects" description="Every object is bounded in worker memory and has no host counterpart."><Table><thead><tr><th>Category</th><th>Operation</th><th>Target</th><th>Detail</th><th>Result</th></tr></thead><tbody>{report.system.map((event, index) => <tr key={`${event.category}-${index}`}><td><span className="tag">{event.category}</span></td><td>{event.operation.replaceAll('_', ' ')}</td><td><code>{event.target}</code></td><td>{event.detail}</td><td><code>{formatOffset(event.result)}</code></td></tr>)}</tbody></Table></Section>
 }
 
 function ThreadView({ report }: { report: DynamicReport }) {

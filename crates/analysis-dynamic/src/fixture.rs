@@ -184,6 +184,37 @@ pub fn instruction_coverage_pe32() -> Vec<u8> {
     bytes
 }
 
+pub fn system_objects_pe32() -> Vec<u8> {
+    let mut bytes = safe_dynamic_pe32();
+    let code = [
+        0x68, 0x00, 0x11, 0x40, 0x00, // name
+        0x6a, 0x00, // initial state
+        0x6a, 0x00, // auto reset
+        0x6a, 0x00, // security
+        0xff, 0x15, 0x60, 0x20, 0x40, 0x00, // CreateEventA
+        0x89, 0xc3, // mov ebx,eax
+        0x6a, 0x00, 0x53, 0xff, 0x15, 0x64, 0x20, 0x40,
+        0x00, // WaitForSingleObject -> timeout
+        0x53, 0xff, 0x15, 0x68, 0x20, 0x40, 0x00, // SetEvent
+        0x6a, 0x00, 0x53, 0xff, 0x15, 0x64, 0x20, 0x40,
+        0x00, // WaitForSingleObject -> signaled
+        0x6a, 0x00, 0xff, 0x15, 0x6c, 0x20, 0x40, 0x00, // ExitProcess
+        0xf4,
+    ];
+    bytes[0x200..0x400].fill(0);
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+    write_c_string(&mut bytes, 0x300, b"AegisReady");
+    for (index, name_rva) in [0x2090, 0x20c8, 0x20e0, 0x20f0, 0].into_iter().enumerate() {
+        put_u32(&mut bytes, 0x440 + index * 4, name_rva);
+        put_u32(&mut bytes, 0x460 + index * 4, name_rva);
+    }
+    write_hint_name(&mut bytes, 0x490, b"CreateEventA");
+    write_hint_name(&mut bytes, 0x4c8, b"WaitForSingleObject");
+    write_hint_name(&mut bytes, 0x4e0, b"SetEvent");
+    write_hint_name(&mut bytes, 0x4f0, b"ExitProcess");
+    bytes
+}
+
 pub fn runtime_artifact_pe32() -> Vec<u8> {
     let mut bytes = safe_dynamic_pe32();
     let payload = b"MZ AEGIS_SAFE_RUNTIME_ARTIFACT powershell https://artifact.example.test\0";

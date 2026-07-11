@@ -64,6 +64,9 @@ Dynamic analysis:
 - In-memory files, registry keys, network sink, process events, mappings, and
   synthetic remote-process address spaces
 - 4,096 live handles, 1 MiB per virtual file, and 16 MiB total virtual file data
+- Kernel objects, enumeration snapshots, restricted tokens, shared mappings, named
+  pipes, resources, and crypto providers are synthetic handles under the same limit
+- Crypto hash input is capped at 4 MiB per handle; it never invokes host key stores
 - 4 MiB per synthetic remote-memory region and 16 MiB total remote-process memory
 - A bounded synthetic PEB/TEB and process environment that reveal no host values
 - Guest SEH chains dispatch at most 16 handlers per exception and retain at most 128

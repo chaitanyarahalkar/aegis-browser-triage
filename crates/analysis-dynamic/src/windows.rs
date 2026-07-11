@@ -8,14 +8,58 @@ const MAX_TOTAL_REMOTE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub enum HandleResource {
-    File { path: String, offset: usize },
-    Module { name: String },
-    Registry { key: String },
-    Internet { label: String },
-    Process { pid: u32 },
-    Thread { tid: u32 },
-    Heap { label: String },
-    Service { name: String },
+    File {
+        path: String,
+        offset: usize,
+    },
+    Module {
+        name: String,
+    },
+    Registry {
+        key: String,
+    },
+    Internet {
+        label: String,
+    },
+    Process {
+        pid: u32,
+    },
+    Thread {
+        tid: u32,
+    },
+    Heap {
+        label: String,
+    },
+    Service {
+        name: String,
+    },
+    Mutex {
+        name: String,
+        owned: bool,
+    },
+    Event {
+        name: String,
+        signaled: bool,
+        manual_reset: bool,
+    },
+    Mapping {
+        name: String,
+        size: usize,
+    },
+    Token {
+        pid: u32,
+    },
+    Snapshot {
+        index: usize,
+    },
+    Find {
+        entries: Vec<String>,
+        index: usize,
+    },
+    CryptoProvider,
+    CryptoHash {
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -87,12 +131,131 @@ impl VirtualWindows {
             Some(HandleResource::Thread { tid }) => Some(format!("thread:{tid}")),
             Some(HandleResource::Heap { label }) => Some(label.clone()),
             Some(HandleResource::Service { name }) => Some(name.clone()),
+            Some(HandleResource::Mutex { name, .. }) => Some(format!("mutex:{name}")),
+            Some(HandleResource::Event { name, .. }) => Some(format!("event:{name}")),
+            Some(HandleResource::Mapping { name, .. }) => Some(format!("mapping:{name}")),
+            Some(HandleResource::Token { pid }) => Some(format!("token:{pid}")),
+            Some(HandleResource::Snapshot { .. }) => Some("process snapshot".into()),
+            Some(HandleResource::Find { .. }) => Some("file enumeration".into()),
+            Some(HandleResource::CryptoProvider) => Some("crypto provider".into()),
+            Some(HandleResource::CryptoHash { .. }) => Some("crypto hash".into()),
             None => None,
         }
     }
 
     pub fn last_error(&self) -> u32 {
         self.last_error
+    }
+
+    pub fn signal_event(&mut self, handle: u32, signaled: bool) -> bool {
+        match self.handles.get_mut(&handle) {
+            Some(HandleResource::Event {
+                signaled: value, ..
+            }) => {
+                *value = signaled;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn release_mutex(&mut self, handle: u32) -> bool {
+        match self.handles.get_mut(&handle) {
+            Some(HandleResource::Mutex { owned, .. }) => {
+                *owned = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn wait(&mut self, handle: u32) -> Option<bool> {
+        match self.handles.get_mut(&handle) {
+            Some(HandleResource::Event {
+                signaled,
+                manual_reset,
+                ..
+            }) => {
+                let ready = *signaled;
+                if ready && !*manual_reset {
+                    *signaled = false;
+                }
+                Some(ready)
+            }
+            Some(HandleResource::Mutex { owned, .. }) => {
+                let ready = !*owned;
+                if ready {
+                    *owned = true;
+                }
+                Some(ready)
+            }
+            Some(HandleResource::Thread { .. }) | Some(HandleResource::Process { .. }) => {
+                Some(true)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn mapping_size(&self, handle: u32) -> Option<usize> {
+        match self.handles.get(&handle) {
+            Some(HandleResource::Mapping { size, .. }) => Some(*size),
+            _ => None,
+        }
+    }
+
+    pub fn start_file_find(&mut self, pattern: &str) -> Option<(u32, String)> {
+        let needle = pattern.trim_matches('*').to_ascii_lowercase();
+        let entries: Vec<_> = self
+            .files
+            .keys()
+            .filter(|path| needle.is_empty() || path.to_ascii_lowercase().contains(&needle))
+            .cloned()
+            .collect();
+        let first = entries.first()?.clone();
+        let handle = self.allocate(HandleResource::Find { entries, index: 1 })?;
+        Some((handle, first))
+    }
+
+    pub fn next_file_find(&mut self, handle: u32) -> Option<String> {
+        let HandleResource::Find { entries, index } = self.handles.get_mut(&handle)? else {
+            return None;
+        };
+        let value = entries.get(*index)?.clone();
+        *index += 1;
+        Some(value)
+    }
+
+    pub fn next_process(&mut self, handle: u32, reset: bool) -> Option<(u32, &'static str)> {
+        const PROCESSES: &[(u32, &str)] =
+            &[(4, "System"), (1200, "explorer.exe"), (1337, "sample.exe")];
+        let HandleResource::Snapshot { index } = self.handles.get_mut(&handle)? else {
+            return None;
+        };
+        if reset {
+            *index = 0;
+        }
+        let value = PROCESSES.get(*index).copied()?;
+        *index += 1;
+        Some(value)
+    }
+
+    pub fn hash_update(&mut self, handle: u32, bytes: &[u8]) -> bool {
+        match self.handles.get_mut(&handle) {
+            Some(HandleResource::CryptoHash { data })
+                if data.len().saturating_add(bytes.len()) <= 4 * 1024 * 1024 =>
+            {
+                data.extend_from_slice(bytes);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn hash_bytes(&self, handle: u32) -> Option<&[u8]> {
+        match self.handles.get(&handle) {
+            Some(HandleResource::CryptoHash { data }) => Some(data),
+            _ => None,
+        }
     }
 
     pub fn set_last_error(&mut self, value: u32) {
