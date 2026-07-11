@@ -120,7 +120,7 @@ mod tests {
                 .any(|event| event.summary.contains("powershell.exe"))
         );
         assert!(report.instruction_count >= 8);
-        assert_eq!(report.schema_version, 3);
+        assert_eq!(report.schema_version, 4);
         assert_eq!(report.timeline.len(), report.api_calls.len());
         assert_eq!(report.timeline[2].category, "process");
         assert_eq!(report.coverage.modeled_api_calls, 4);
@@ -136,6 +136,28 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&first).unwrap(),
             serde_json::to_string(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn environment_profiles_produce_deterministic_run_variants() {
+        let bytes = fixture::safe_dynamic_pe32();
+        let balanced = analyze_dynamic("safe.exe", &bytes, &DynamicOptions::default()).unwrap();
+        let hardened_options = DynamicOptions {
+            environment: EnvironmentProfile::hardened(),
+            ..DynamicOptions::default()
+        };
+        let hardened = analyze_dynamic("safe.exe", &bytes, &hardened_options).unwrap();
+        let hardened_again = analyze_dynamic("safe.exe", &bytes, &hardened_options).unwrap();
+        assert_eq!(hardened.profile.environment.id, "hardened");
+        assert_eq!(
+            hardened.profile.environment.network_mode,
+            NetworkMode::Offline
+        );
+        assert_ne!(balanced.api_calls[0].result, hardened.api_calls[0].result);
+        assert_eq!(
+            serde_json::to_string(&hardened).unwrap(),
+            serde_json::to_string(&hardened_again).unwrap()
         );
     }
 
@@ -212,6 +234,7 @@ mod tests {
             &DynamicOptions {
                 max_instructions: 25,
                 max_trace_events: 10,
+                ..DynamicOptions::default()
             },
         )
         .unwrap();

@@ -57,6 +57,10 @@ Dynamic analysis:
 - Hard ceilings of 10,000,000 instructions, 5,000 traces, 100,000 API calls,
   and 256 MiB of mapped guest memory
 - Deterministic virtual time and synthetic handles
+- Four bounded deterministic environment presets vary synthetic Windows version,
+  identity, locale, timezone, CPU/RAM, debugger state, clock, and network disposition
+- A profile matrix is limited to four sequential runs in one worker; each run retains
+  the same instruction, memory, trace, API, artifact, and watchdog boundaries
 - In-memory files, registry keys, network sink, process events, mappings, and
   synthetic remote-process address spaces
 - 4,096 live handles, 1 MiB per virtual file, and 16 MiB total virtual file data

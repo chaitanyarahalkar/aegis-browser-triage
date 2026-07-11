@@ -8,6 +8,7 @@ import type {
   AnalysisReport,
   ArtifactYaraResult,
   DynamicProgressStage,
+  DynamicEnvironmentProfile,
   DynamicReport,
   DynamicTermination,
   ExtractedString,
@@ -20,6 +21,12 @@ import type {
 
 const MAX_INPUT_BYTES = 128 * 1024 * 1024
 const PAGE_SIZE = 100
+const ENVIRONMENT_PROFILES: DynamicEnvironmentProfile[] = [
+  { id: 'balanced', label: 'Balanced workstation', windows_version: 'Windows 10 22H2', computer_name: 'AEGIS-WORKSTATION', user_name: 'analyst', locale: 'en-US', timezone_offset_minutes: -360, memory_mb: 8192, cpu_count: 4, debugger_present: false, network_mode: 'online', initial_virtual_time_ms: 1_000_000 },
+  { id: 'legacy', label: 'Legacy workstation', windows_version: 'Windows 7 SP1', computer_name: 'OFFICE-PC', user_name: 'user', locale: 'en-US', timezone_offset_minutes: -300, memory_mb: 2048, cpu_count: 2, debugger_present: false, network_mode: 'online', initial_virtual_time_ms: 500_000 },
+  { id: 'hardened', label: 'Hardened offline host', windows_version: 'Windows 11 24H2', computer_name: 'CORP-WKS-042', user_name: 'employee', locale: 'en-GB', timezone_offset_minutes: 0, memory_mb: 16384, cpu_count: 8, debugger_present: false, network_mode: 'offline', initial_virtual_time_ms: 2_000_000 },
+  { id: 'analysis', label: 'Instrumented analysis host', windows_version: 'Windows 10 analysis', computer_name: 'MALWARE-LAB', user_name: 'sandbox', locale: 'en-US', timezone_offset_minutes: 0, memory_mb: 1024, cpu_count: 1, debugger_present: true, network_mode: 'sinkhole', initial_virtual_time_ms: 3_000_000 },
+]
 type AppStatus = 'idle' | 'reading' | 'analyzing' | 'done' | 'error'
 type DynamicStatus = 'idle' | 'running' | 'done' | 'error'
 type YaraStatus = 'idle' | 'running' | 'done' | 'error'
@@ -54,6 +61,8 @@ export default function App() {
   const [dynamicStatus, setDynamicStatus] = useState<DynamicStatus>('idle')
   const [dynamicStage, setDynamicStage] = useState<DynamicProgressStage>('loading-engine')
   const [dynamicReport, setDynamicReport] = useState<DynamicReport | null>(null)
+  const [dynamicReports, setDynamicReports] = useState<DynamicReport[]>([])
+  const [dynamicProfileId, setDynamicProfileId] = useState('balanced')
   const [dynamicError, setDynamicError] = useState<string | null>(null)
   const [yaraSource, setYaraSource] = useState(starterRules)
   const [yaraSourceName, setYaraSourceName] = useState('aegis-starter.yar')
@@ -82,6 +91,7 @@ export default function App() {
     setDynamicStatus('idle')
     setDynamicStage('loading-engine')
     setDynamicReport(null)
+    setDynamicReports([])
     setDynamicError(null)
     setArtifactYara([])
     setArtifactYaraStatus('idle')
@@ -178,16 +188,44 @@ export default function App() {
     setArtifactYaraError(null)
     try {
       const buffer = await currentFile.arrayBuffer()
-      const result = await dynamicClient.analyze(currentFile, buffer, setDynamicStage)
+      const environment = ENVIRONMENT_PROFILES.find((profile) => profile.id === dynamicProfileId) ?? ENVIRONMENT_PROFILES[0]
+      const result = await dynamicClient.analyze(currentFile, buffer, setDynamicStage, environment)
       if (dynamicRun.current !== run) return
       setDynamicReport(result)
+      setDynamicReports([result])
       setDynamicStatus('done')
     } catch (cause) {
       if (dynamicRun.current !== run) return
       setDynamicError(cause instanceof Error ? cause.message : 'Dynamic analysis failed unexpectedly.')
       setDynamicStatus('error')
     }
-  }, [currentFile, dynamicClient])
+  }, [currentFile, dynamicClient, dynamicProfileId])
+
+  const runDynamicProfiles = useCallback(async () => {
+    if (!currentFile) return
+    const run = ++dynamicRun.current
+    setDynamicStatus('running'); setDynamicError(null); setDynamicReport(null); setDynamicReports([]); setDynamicStage('loading-engine')
+    setArtifactYara([]); setArtifactYaraStatus('idle'); setArtifactYaraError(null)
+    try {
+      const buffer = await currentFile.arrayBuffer()
+      const results = await dynamicClient.analyzeProfiles(currentFile, buffer, ENVIRONMENT_PROFILES, setDynamicStage)
+      if (dynamicRun.current !== run) return
+      setDynamicReports(results)
+      setDynamicReport(results.find((result) => result.profile.environment.id === dynamicProfileId) ?? results[0])
+      setDynamicStatus('done')
+    } catch (cause) {
+      if (dynamicRun.current !== run) return
+      setDynamicError(cause instanceof Error ? cause.message : 'Profile matrix analysis failed unexpectedly.')
+      setDynamicStatus('error')
+    }
+  }, [currentFile, dynamicClient, dynamicProfileId])
+
+  const selectDynamicProfile = useCallback((profileId: string) => {
+    setDynamicProfileId(profileId)
+    const existing = dynamicReports.find((result) => result.profile.environment.id === profileId)
+    if (existing) { setDynamicReport(existing); setArtifactYara([]); setArtifactYaraStatus('idle'); setArtifactYaraError(null) }
+    else if (dynamicReport) { setDynamicReport(null); setDynamicReports([]); setDynamicStatus('idle') }
+  }, [dynamicReport, dynamicReports])
 
   const scanDynamicArtifacts = useCallback(async () => {
     if (!dynamicReport?.artifacts.length) return
@@ -195,7 +233,7 @@ export default function App() {
     try {
       await yaraClient.compile(yaraSource, yaraSourceName, 'Analyst rules', setYaraStage)
       const artifacts = await Promise.all(dynamicReport.artifacts.map(async (artifact) => {
-        const result = await dynamicClient.readArtifact(artifact.id)
+        const result = await dynamicClient.readArtifact(dynamicReport.profile.environment.id, artifact.id)
         return { id: artifact.id, name: artifact.name, buffer: result.bytes.buffer }
       }))
       const results = await yaraClient.scanArtifacts(artifacts, setYaraStage)
@@ -225,7 +263,7 @@ export default function App() {
 
   const exportReport = () => {
     if (!report) return
-    const payload = { static: report, ...(dynamicReport ? { dynamic: { ...dynamicReport, ...(artifactYara.length ? { artifact_yara: artifactYara } : {}) } } : {}), ...(yaraReport ? { yara: yaraReport } : {}) }
+    const payload = { static: report, ...(dynamicReport ? { dynamic: { ...dynamicReport, ...(artifactYara.length ? { artifact_yara: artifactYara } : {}) } } : {}), ...(dynamicReports.length > 1 ? { dynamic_profiles: dynamicReports } : {}), ...(yaraReport ? { yara: yaraReport } : {}) }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
@@ -291,6 +329,8 @@ export default function App() {
           <Workspace
             report={report}
             dynamicReport={dynamicReport}
+            dynamicReports={dynamicReports}
+            dynamicProfileId={dynamicProfileId}
             dynamicStatus={dynamicStatus}
             dynamicStage={dynamicStage}
             dynamicError={dynamicError}
@@ -300,6 +340,8 @@ export default function App() {
             onClose={closeSample}
             onExport={exportReport}
             onRunDynamic={runDynamicAnalysis}
+            onRunDynamicProfiles={runDynamicProfiles}
+            onSelectDynamicProfile={selectDynamicProfile}
             onCancelDynamic={cancelDynamic}
             dynamicClient={dynamicClient}
             artifactYara={artifactYara}
@@ -385,9 +427,11 @@ function StaticProgress({ status, stage, onCancel }: { status: AppStatus; stage:
   )
 }
 
-function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamicError, staticClient, dynamicClient, artifactYara, artifactYaraStatus, artifactYaraError, onScanArtifacts, activeTab, onTabChange, onClose, onExport, onRunDynamic, onCancelDynamic, yaraSource, yaraSourceName, yaraStatus, yaraStage, yaraSummary, yaraReport, yaraError, onYaraSource, onRunYara, onYaraOffset, hexTarget }: {
+function Workspace({ report, dynamicReport, dynamicReports, dynamicProfileId, dynamicStatus, dynamicStage, dynamicError, staticClient, dynamicClient, artifactYara, artifactYaraStatus, artifactYaraError, onScanArtifacts, activeTab, onTabChange, onClose, onExport, onRunDynamic, onRunDynamicProfiles, onSelectDynamicProfile, onCancelDynamic, yaraSource, yaraSourceName, yaraStatus, yaraStage, yaraSummary, yaraReport, yaraError, onYaraSource, onRunYara, onYaraOffset, hexTarget }: {
   report: AnalysisReport
   dynamicReport: DynamicReport | null
+  dynamicReports: DynamicReport[]
+  dynamicProfileId: string
   dynamicStatus: DynamicStatus
   dynamicStage: DynamicProgressStage
   dynamicError: string | null
@@ -402,6 +446,8 @@ function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamic
   onClose: () => void
   onExport: () => void
   onRunDynamic: () => void
+  onRunDynamicProfiles: () => void
+  onSelectDynamicProfile: (profileId: string) => void
   onCancelDynamic: () => void
   yaraSource: string
   yaraSourceName: string
@@ -456,10 +502,14 @@ function Workspace({ report, dynamicReport, dynamicStatus, dynamicStage, dynamic
           <DynamicView
             staticReport={report}
             report={dynamicReport}
+            reports={dynamicReports}
+            profileId={dynamicProfileId}
             status={dynamicStatus}
             stage={dynamicStage}
             error={dynamicError}
             onRun={onRunDynamic}
+            onRunProfiles={onRunDynamicProfiles}
+            onSelectProfile={onSelectDynamicProfile}
             onCancel={onCancelDynamic}
             client={dynamicClient}
             artifactYara={artifactYara}
@@ -511,13 +561,17 @@ function SummaryView({ report }: { report: AnalysisReport }) {
   )
 }
 
-function DynamicView({ staticReport, report, status, stage, error, onRun, onCancel, client, artifactYara, artifactYaraStatus, artifactYaraError, onScanArtifacts }: {
+function DynamicView({ staticReport, report, reports, profileId, status, stage, error, onRun, onRunProfiles, onSelectProfile, onCancel, client, artifactYara, artifactYaraStatus, artifactYaraError, onScanArtifacts }: {
   staticReport: AnalysisReport
   report: DynamicReport | null
+  reports: DynamicReport[]
+  profileId: string
   status: DynamicStatus
   stage: DynamicProgressStage
   error: string | null
   onRun: () => void
+  onRunProfiles: () => void
+  onSelectProfile: (profileId: string) => void
   onCancel: () => void
   client: DynamicAnalysisClient
   artifactYara: ArtifactYaraResult[]
@@ -527,7 +581,7 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
 }) {
   const format = staticReport.format as Record<string, unknown>
   const eligible = format.kind === 'pe' && format.bitness === 32
-  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts'>('timeline')
+  const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
@@ -546,7 +600,8 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
           <p className="kicker">PE32 / x86 interpreter</p>
           <h2>Observe modeled behavior</h2>
           <p>Instructions run in a deterministic Rust interpreter. Windows APIs, files, registry keys, memory, and network operations are synthetic and never map to browser resources.</p>
-          <button className="button primary" type="button" onClick={onRun}>Run dynamic analysis</button>
+          <ProfilePicker value={profileId} onChange={onSelectProfile} />
+          <div className="button-row"><button className="button primary" type="button" onClick={onRun}>Run selected profile</button><button className="button secondary" type="button" onClick={onRunProfiles}>Compare all profiles</button></div>
         </div>
         <dl className="limits-list">
           <div><dt>Instruction limit</dt><dd>1,000,000</dd></div>
@@ -561,6 +616,7 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
   const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length + report.injection.length + report.persistence.length
   return (
     <div className="dynamic-report">
+      <div className="profile-toolbar"><ProfilePicker value={profileId} onChange={onSelectProfile} /><button className="button secondary compact" type="button" onClick={onRunProfiles}>Run profile matrix</button><span>{report.profile.environment.windows_version} · {report.profile.environment.network_mode}</span></div>
       <div className="stats-grid four">
         <Stat label="Termination" value={terminationLabel(report.termination)} detail="Bounded execution" />
         <Stat label="Instructions" value={report.instruction_count.toLocaleString()} detail={`${report.coverage.unique_instruction_addresses.toLocaleString()} unique addresses`} />
@@ -582,6 +638,7 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
         <button className={view === 'instructions' ? 'active' : ''} type="button" onClick={() => setView('instructions')}>Instructions ({report.instructions.length})</button>
         <button className={view === 'coverage' ? 'active' : ''} type="button" onClick={() => setView('coverage')}>Coverage</button>
         <button className={view === 'artifacts' ? 'active' : ''} type="button" onClick={() => setView('artifacts')}>Artifacts ({report.artifacts.length})</button>
+        {reports.length > 1 && <button className={view === 'profiles' ? 'active' : ''} type="button" onClick={() => setView('profiles')}>Profile comparison ({reports.length})</button>}
       </div>
       {view === 'timeline' && <TimelineView report={report} target={timelineTarget} />}
       {view === 'behavior' && <BehaviorView report={report} />}
@@ -589,8 +646,18 @@ function DynamicView({ staticReport, report, status, stage, error, onRun, onCanc
       {view === 'instructions' && <InstructionView report={report} />}
       {view === 'coverage' && <CoverageView report={report} />}
       {view === 'artifacts' && <ArtifactsView report={report} client={client} yara={artifactYara} status={artifactYaraStatus} error={artifactYaraError} onScan={onScanArtifacts} onTimeline={(sequence) => { setTimelineTarget(sequence); setView('timeline') }} />}
+      {view === 'profiles' && <ProfileComparison reports={reports} onSelect={(id) => { onSelectProfile(id); setView('timeline') }} />}
     </div>
   )
+}
+
+function ProfilePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return <label className="profile-picker"><span>Environment profile</span><select aria-label="Environment profile" value={value} onChange={(event) => onChange(event.target.value)}>{ENVIRONMENT_PROFILES.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</select></label>
+}
+
+function ProfileComparison({ reports, onSelect }: { reports: DynamicReport[]; onSelect: (profileId: string) => void }) {
+  const baseline = reports[0]
+  return <Section title="Environment profile comparison" description="The same sample was executed independently under deterministic synthetic environments."><Table><thead><tr><th>Profile</th><th>Environment</th><th>Termination</th><th>Instructions</th><th>Behavior</th><th>Artifacts</th><th>Delta from baseline</th></tr></thead><tbody>{reports.map((report) => { const behavior = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.persistence.length + report.injection.length; const baselineBehavior = baseline.processes.length + baseline.filesystem.length + baseline.registry.length + baseline.network.length + baseline.persistence.length + baseline.injection.length; const apiResultChanged = report.api_calls.some((event, index) => event.result !== baseline.api_calls[index]?.result); const delta = report.api_calls.length !== baseline.api_calls.length || apiResultChanged || behavior !== baselineBehavior || report.artifacts.length !== baseline.artifacts.length || JSON.stringify(report.termination) !== JSON.stringify(baseline.termination); return <tr key={report.profile.environment.id}><td><button className="offset-link" type="button" onClick={() => onSelect(report.profile.environment.id)}>{report.profile.environment.label}</button></td><td><small>{report.profile.environment.windows_version}<br />{report.profile.environment.cpu_count} CPU · {formatBytes(report.profile.environment.memory_mb * 1024 * 1024)} · {report.profile.environment.network_mode}{report.profile.environment.debugger_present ? ' · debugger' : ''}</small></td><td>{terminationLabel(report.termination)}</td><td>{report.instruction_count.toLocaleString()}</td><td>{behavior}</td><td>{report.artifacts.length}</td><td><span className={`tag ${delta ? 'danger' : ''}`}>{report === baseline ? 'Baseline' : delta ? 'Behavior changed' : 'Same path'}</span></td></tr> })}</tbody></Table></Section>
 }
 
 function InjectionChain({ events }: { events: DynamicReport['injection'] }) {
@@ -609,12 +676,12 @@ function ArtifactsView({ report, client, yara, status, error, onScan, onTimeline
   useEffect(() => {
     if (!selected) return
     let alive = true; setReadError(null)
-    client.readArtifactSlice(selected.id, offset, 512).then((result) => { if (alive) setBytes(result.bytes) }).catch((cause) => { if (alive) setReadError(cause instanceof Error ? cause.message : 'Artifact read failed') })
+    client.readArtifactSlice(report.profile.environment.id, selected.id, offset, 512).then((result) => { if (alive) setBytes(result.bytes) }).catch((cause) => { if (alive) setReadError(cause instanceof Error ? cause.message : 'Artifact read failed') })
     return () => { alive = false }
   }, [client, offset, selected])
   const exportBytes = async () => {
     if (!selected) return
-    const result = await client.readArtifact(selected.id)
+    const result = await client.readArtifact(report.profile.environment.id, selected.id)
     const url = URL.createObjectURL(new Blob([result.bytes.buffer], { type: 'application/octet-stream' }))
     const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${selected.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'artifact'}.bin`; anchor.click()
     window.setTimeout(() => URL.revokeObjectURL(url), 0); setExportTarget(null)

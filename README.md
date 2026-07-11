@@ -31,6 +31,8 @@ Dynamic reports currently include:
 - Stateful synthetic handles, files, registry values, processes, DNS, sockets,
   HTTP sessions, heaps, environment, and memory
 - Ordered behavior timeline and execution/API coverage metrics
+- Four deterministic Windows environment profiles with selectable single runs and
+  a bounded profile-matrix comparison for environment-sensitive behavior
 - Correlated process-injection primitives such as remote allocation, writes,
   protection changes, remote threads, and APCs
 - Bounded runtime artifact capture from interesting memory, virtual files, and
@@ -72,8 +74,8 @@ npm run test:e2e
 Open <http://127.0.0.1:4173> after `npm run preview`. `npm run dev` builds all
 Rust engines and starts the development server. Browser tests cover desktop and
 mobile Chromium, dynamic API behavior, YARA compilation and matches, instruction
-and memory limits, runtime artifact capture and YARA, CSP, storage, malformed input,
-export, and a static performance budget.
+and memory limits, deterministic environment matrices, runtime artifact capture and
+YARA, CSP, storage, malformed input, export, and a static performance budget.
 
 On Homebrew systems where `rustup` is keg-only, prepend its shim directory for
 Wasm builds:

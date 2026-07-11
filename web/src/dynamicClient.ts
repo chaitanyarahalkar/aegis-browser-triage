@@ -1,9 +1,9 @@
-import type { DynamicProgressStage, DynamicReport, DynamicWorkerResponse } from './types'
+import type { DynamicEnvironmentProfile, DynamicProgressStage, DynamicReport, DynamicWorkerResponse } from './types'
 
 const DYNAMIC_TIMEOUT_MS = 10_000
 
 type PendingJob = {
-  resolve: (report: DynamicReport) => void
+  resolve: (report: DynamicReport | DynamicReport[]) => void
   reject: (error: Error) => void
   onProgress: (stage: DynamicProgressStage) => void
   timeout: number
@@ -19,6 +19,7 @@ export class DynamicAnalysisClient {
     file: File,
     buffer: ArrayBuffer,
     onProgress: (stage: DynamicProgressStage) => void,
+    environment?: DynamicEnvironmentProfile,
   ): Promise<DynamicReport> {
     this.cancel('Replaced by a new dynamic analysis')
     const worker = this.ensureWorker()
@@ -27,14 +28,25 @@ export class DynamicAnalysisClient {
       const timeout = window.setTimeout(() => {
         this.failAndReset(new Error('Dynamic analysis exceeded the 10 second safety limit'))
       }, DYNAMIC_TIMEOUT_MS)
-      this.pending.set(jobId, { resolve, reject, onProgress, timeout })
+      this.pending.set(jobId, { resolve: resolve as PendingJob['resolve'], reject, onProgress, timeout })
       worker.postMessage({
         type: 'analyze-dynamic',
         jobId,
         name: file.name,
         buffer,
-        options: JSON.stringify({ max_instructions: 1_000_000, max_trace_events: 2_000 }),
+        options: JSON.stringify({ max_instructions: 1_000_000, max_trace_events: 2_000, environment }),
       }, [buffer])
+    })
+  }
+
+  analyzeProfiles(file: File, buffer: ArrayBuffer, environments: DynamicEnvironmentProfile[], onProgress: (stage: DynamicProgressStage) => void): Promise<DynamicReport[]> {
+    this.cancel('Replaced by a profile matrix analysis')
+    const worker = this.ensureWorker()
+    const jobId = crypto.randomUUID()
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => this.failAndReset(new Error('Profile matrix analysis exceeded the 40 second safety limit')), 40_000)
+      this.pending.set(jobId, { resolve: resolve as PendingJob['resolve'], reject, onProgress, timeout })
+      worker.postMessage({ type: 'analyze-dynamic-batch', jobId, name: file.name, buffer, options: environments.map((environment) => JSON.stringify({ max_instructions: 1_000_000, max_trace_events: 2_000, environment })) }, [buffer])
     })
   }
 
@@ -46,21 +58,21 @@ export class DynamicAnalysisClient {
     this.cancel('Dynamic sample closed')
   }
 
-  readArtifactSlice(artifactId: string, offset = 0, length = 64 * 1024): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
-    return this.requestArtifact(artifactId, offset, Math.min(length, 64 * 1024), false)
+  readArtifactSlice(profileId: string, artifactId: string, offset = 0, length = 64 * 1024): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
+    return this.requestArtifact(profileId, artifactId, offset, Math.min(length, 64 * 1024), false)
   }
 
-  readArtifact(artifactId: string): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
-    return this.requestArtifact(artifactId, 0, 4 * 1024 * 1024, true)
+  readArtifact(profileId: string, artifactId: string): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
+    return this.requestArtifact(profileId, artifactId, 0, 4 * 1024 * 1024, true)
   }
 
-  private requestArtifact(artifactId: string, offset: number, length: number, full: boolean): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
+  private requestArtifact(profileId: string, artifactId: string, offset: number, length: number, full: boolean): Promise<{ bytes: Uint8Array<ArrayBuffer>; total: number }> {
     const worker = this.ensureWorker()
     const requestId = crypto.randomUUID()
     return new Promise((resolve, reject) => {
       const timeout = window.setTimeout(() => { this.artifactReads.delete(requestId); reject(new Error('Artifact read timed out')) }, 5_000)
       this.artifactReads.set(requestId, { resolve, reject, timeout })
-      worker.postMessage({ type: 'read-artifact', requestId, artifactId, offset, length, full })
+      worker.postMessage({ type: 'read-artifact', requestId, profileId, artifactId, offset, length, full })
     })
   }
 
@@ -97,6 +109,7 @@ export class DynamicAnalysisClient {
     window.clearTimeout(pending.timeout)
     this.pending.delete(message.jobId)
     if (message.type === 'completed') pending.resolve(message.report)
+    else if (message.type === 'batch-completed') pending.resolve(message.reports)
     else pending.reject(new Error(message.message))
   }
 

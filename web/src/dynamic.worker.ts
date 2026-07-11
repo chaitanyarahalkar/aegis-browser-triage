@@ -4,7 +4,12 @@ import type { DynamicWorkerRequest, DynamicWorkerResponse } from './types'
 
 const scope = self as DedicatedWorkerGlobalScope
 const engineReady = init()
-let session: DynamicSession | null = null
+const sessions = new Map<string, DynamicSession>()
+
+function clearSessions(): void {
+  for (const session of sessions.values()) session.free()
+  sessions.clear()
+}
 
 function send(message: DynamicWorkerResponse): void {
   scope.postMessage(message)
@@ -18,7 +23,8 @@ scope.onmessage = async (event: MessageEvent<DynamicWorkerRequest>) => {
   const request = event.data
   if (request.type === 'read-artifact') {
     try {
-      if (!session) throw new Error('No dynamic artifact session is active')
+      const session = sessions.get(request.profileId)
+      if (!session) throw new Error(`No dynamic artifact session is active for ${request.profileId}`)
       const bytes = session.artifact_bytes(request.artifactId)
       const offset = Math.min(request.offset, bytes.length)
       const limit = request.full ? 4 * 1024 * 1024 : 64 * 1024
@@ -30,20 +36,29 @@ scope.onmessage = async (event: MessageEvent<DynamicWorkerRequest>) => {
     }
     return
   }
-  const { jobId, name, buffer, options } = request
+  const { jobId, name, buffer } = request
   try {
     send({ type: 'progress', jobId, stage: 'loading-engine' })
     await engineReady
     send({ type: 'progress', jobId, stage: 'loading-image' })
-    const started = performance.now()
     send({ type: 'progress', jobId, stage: 'executing' })
-    session?.free()
-    session = analyze_dynamic_session(name, new Uint8Array(buffer), options)
-    const report = JSON.parse(session.report_json())
-    report.elapsed_ms = performance.now() - started
+    clearSessions()
+    const optionList = request.type === 'analyze-dynamic-batch' ? request.options : [request.options]
+    if (optionList.length === 0 || optionList.length > 4) throw new Error('Profile matrix must contain between one and four profiles')
+    const reports = optionList.map((options) => {
+      const started = performance.now()
+      const session = analyze_dynamic_session(name, new Uint8Array(buffer), options)
+      const report = JSON.parse(session.report_json())
+      report.elapsed_ms = performance.now() - started
+      if (sessions.has(report.profile.environment.id)) { session.free(); throw new Error('Profile matrix IDs must be unique') }
+      sessions.set(report.profile.environment.id, session)
+      return report
+    })
     send({ type: 'progress', jobId, stage: 'finalizing' })
-    send({ type: 'completed', jobId, report })
+    if (request.type === 'analyze-dynamic-batch') send({ type: 'batch-completed', jobId, reports })
+    else send({ type: 'completed', jobId, report: reports[0] })
   } catch (error) {
+    clearSessions()
     send({ type: 'failed', jobId, message: error instanceof Error ? error.message : String(error) })
   }
 }

@@ -194,6 +194,22 @@ export type DynamicTermination =
   | { reason: 'invalid_instruction'; address: number }
   | { reason: 'memory_fault'; address: number; operation: string }
 
+export type DynamicNetworkMode = 'online' | 'offline' | 'sinkhole'
+export interface DynamicEnvironmentProfile {
+  id: string
+  label: string
+  windows_version: string
+  computer_name: string
+  user_name: string
+  locale: string
+  timezone_offset_minutes: number
+  memory_mb: number
+  cpu_count: number
+  debugger_present: boolean
+  network_mode: DynamicNetworkMode
+  initial_virtual_time_ms: number
+}
+
 export interface DynamicReport {
   schema_version: number
   engine_version: string
@@ -206,6 +222,7 @@ export interface DynamicReport {
     instruction_limit: number
     trace_limit: number
     network_mode: string
+    environment: DynamicEnvironmentProfile
   }
   termination: DynamicTermination
   instruction_count: number
@@ -237,11 +254,13 @@ export interface ArtifactSummary {
 
 export type DynamicWorkerRequest =
   | { type: 'analyze-dynamic'; jobId: string; name: string; buffer: ArrayBuffer; options: string }
-  | { type: 'read-artifact'; requestId: string; artifactId: string; offset: number; length: number; full: boolean }
+  | { type: 'analyze-dynamic-batch'; jobId: string; name: string; buffer: ArrayBuffer; options: string[] }
+  | { type: 'read-artifact'; requestId: string; profileId: string; artifactId: string; offset: number; length: number; full: boolean }
 
 export type DynamicWorkerResponse =
   | { type: 'progress'; jobId: string; stage: DynamicProgressStage }
   | { type: 'completed'; jobId: string; report: DynamicReport }
+  | { type: 'batch-completed'; jobId: string; reports: DynamicReport[] }
   | { type: 'failed'; jobId: string; message: string }
   | { type: 'artifact-slice'; requestId: string; artifactId: string; offset: number; total: number; buffer: ArrayBuffer }
   | { type: 'artifact-failed'; requestId: string; message: string }

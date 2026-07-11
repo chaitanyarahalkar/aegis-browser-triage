@@ -145,6 +145,11 @@ code { font-family: var(--mono); }
 .injection-chain code, .injection-chain small { overflow: hidden; text-overflow: ellipsis; font-size: 9px; white-space: nowrap; }
 .injection-chain small { color: var(--muted); }
 .artifact-layout { display: grid; gap: 16px; }
+.profile-picker { display: grid; gap: 6px; min-width: 224px; }
+.profile-picker span { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.profile-picker select { background: white; border: 1px solid var(--border); border-radius: 7px; color: var(--ink); min-height: 40px; padding: 0 11px; }
+.profile-toolbar { align-items: end; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 12px; padding: 13px; }
+.profile-toolbar > span { color: var(--muted); font-size: 13px; margin-left: auto; padding-bottom: 10px; }
 .artifact-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--border); border-radius: 8px; background: white; padding-right: 12px; }
 .artifact-actions .timeline-filters { border: 0; }
 .artifact-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, .8fr); gap: 14px; align-items: start; }

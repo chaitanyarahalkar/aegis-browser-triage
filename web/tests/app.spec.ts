@@ -13,7 +13,7 @@ async function loadSafeDemo(page: import('@playwright/test').Page) {
 
 async function runDynamic(page: import('@playwright/test').Page) {
   await page.getByRole('tab', { name: /^Dynamic/ }).click()
-  await page.getByRole('button', { name: 'Run dynamic analysis' }).click()
+  await page.getByRole('button', { name: 'Run selected profile' }).click()
   await expect(page.getByText('Exit 0', { exact: true })).toBeVisible()
 }
 
@@ -51,7 +51,31 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.locator('tbody')).toContainText('call dword ptr')
   await page.getByRole('button', { name: 'Coverage' }).click()
   await expect(page.getByText('100.0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('Dynamic v3', { exact: true })).toBeVisible()
+  await expect(page.getByText('Dynamic v4', { exact: true })).toBeVisible()
+})
+
+test('runs and compares deterministic environment profiles', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'desktop profile comparison workflow')
+  await loadSafeDemo(page)
+  await page.getByRole('tab', { name: /^Dynamic/ }).click()
+  await expect(page.getByLabel('Environment profile')).toHaveValue('balanced')
+  await page.getByRole('button', { name: 'Compare all profiles' }).click()
+  await expect(page.getByRole('button', { name: 'Profile comparison (4)' })).toBeVisible()
+  await page.getByRole('button', { name: 'Profile comparison (4)' }).click()
+  for (const profile of ['Balanced workstation', 'Legacy workstation', 'Hardened offline host', 'Instrumented analysis host']) {
+    await expect(page.getByRole('button', { name: profile, exact: true })).toBeVisible()
+  }
+  await expect(page.getByText('Behavior changed', { exact: true }).first()).toBeVisible()
+  await page.getByRole('button', { name: 'Hardened offline host', exact: true }).click()
+  await expect(page.getByText('Windows 11 24H2 · offline', { exact: true })).toBeVisible()
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export report' }).click()
+  const download = await downloadPromise
+  const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
+  expect(json.dynamic.profile.environment.id).toBe('hardened')
+  expect(json.dynamic_profiles).toHaveLength(4)
+  expect(json.dynamic_profiles.map((report: { profile: { environment: { id: string } } }) => report.profile.environment.id)).toEqual(['balanced', 'legacy', 'hardened', 'analysis'])
 })
 
 test('bounds an infinite loop by instruction count', async ({ page, isMobile }) => {
@@ -62,7 +86,7 @@ test('bounds an infinite loop by instruction count', async ({ page, isMobile }) 
   await page.getByTestId('file-input').setInputFiles({ name: 'bounded-loop.exe', mimeType: 'application/octet-stream', buffer: loop })
   await expect(page.getByText('bounded-loop.exe')).toBeVisible()
   await page.getByRole('tab', { name: /^Dynamic/ }).click()
-  await page.getByRole('button', { name: 'Run dynamic analysis' }).click()
+  await page.getByRole('button', { name: 'Run selected profile' }).click()
   await expect(page.getByText('Limit reached', { exact: true })).toBeVisible()
   await expect(page.getByText('1,000,000', { exact: true })).toBeVisible()
 })
@@ -75,7 +99,7 @@ test('turns invalid guest memory access into a reportable fault', async ({ page,
   await page.getByTestId('file-input').setInputFiles({ name: 'memory-fault.exe', mimeType: 'application/octet-stream', buffer: fault })
   await expect(page.getByText('memory-fault.exe')).toBeVisible()
   await page.getByRole('tab', { name: /^Dynamic/ }).click()
-  await page.getByRole('button', { name: 'Run dynamic analysis' }).click()
+  await page.getByRole('button', { name: 'Run selected profile' }).click()
   await expect(page.getByText('Memory fault', { exact: true })).toBeVisible()
 })
 
@@ -125,7 +149,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
   expect(json.static.sample.detected_format).toBe('pe')
   expect(json.dynamic.termination).toEqual({ reason: 'exit_process', code: 0 })
-  expect(json.dynamic.schema_version).toBe(3)
+  expect(json.dynamic.schema_version).toBe(4)
   expect(json.dynamic.timeline).toHaveLength(4)
   expect(json.dynamic.coverage.modeled_api_calls).toBe(4)
   expect(json.dynamic.processes[0].command).toContain('powershell.exe')

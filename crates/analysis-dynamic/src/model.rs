@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DYNAMIC_SCHEMA_VERSION: u32 = 3;
+pub const DYNAMIC_SCHEMA_VERSION: u32 = 4;
 pub const HARD_MAX_INSTRUCTIONS: u64 = 10_000_000;
 pub const HARD_MAX_TRACE_EVENTS: usize = 5_000;
 pub const HARD_MAX_API_EVENTS: usize = 100_000;
@@ -12,6 +12,8 @@ pub struct DynamicOptions {
     pub max_instructions: u64,
     #[serde(default = "default_max_trace_events")]
     pub max_trace_events: usize,
+    #[serde(default)]
+    pub environment: EnvironmentProfile,
 }
 
 const fn default_max_instructions() -> u64 {
@@ -27,6 +29,7 @@ impl Default for DynamicOptions {
         Self {
             max_instructions: default_max_instructions(),
             max_trace_events: default_max_trace_events(),
+            environment: EnvironmentProfile::default(),
         }
     }
 }
@@ -35,7 +38,154 @@ impl DynamicOptions {
     pub fn bounded(mut self) -> Self {
         self.max_instructions = self.max_instructions.clamp(1, HARD_MAX_INSTRUCTIONS);
         self.max_trace_events = self.max_trace_events.clamp(1, HARD_MAX_TRACE_EVENTS);
+        self.environment = self.environment.bounded();
         self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentProfile {
+    pub id: String,
+    pub label: String,
+    pub windows_version: String,
+    pub computer_name: String,
+    pub user_name: String,
+    pub locale: String,
+    pub timezone_offset_minutes: i32,
+    pub memory_mb: u32,
+    pub cpu_count: u32,
+    pub debugger_present: bool,
+    pub network_mode: NetworkMode,
+    pub initial_virtual_time_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkMode {
+    Online,
+    Offline,
+    Sinkhole,
+}
+
+impl NetworkMode {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Online => "Synthetic online responses; no external access",
+            Self::Offline => "Synthetic offline failures; no external access",
+            Self::Sinkhole => "Synthetic sinkhole responses; no external access",
+        }
+    }
+}
+
+impl Default for EnvironmentProfile {
+    fn default() -> Self {
+        Self::balanced()
+    }
+}
+
+impl EnvironmentProfile {
+    pub fn balanced() -> Self {
+        Self {
+            id: "balanced".into(),
+            label: "Balanced workstation".into(),
+            windows_version: "Windows 10 22H2".into(),
+            computer_name: "AEGIS-WORKSTATION".into(),
+            user_name: "analyst".into(),
+            locale: "en-US".into(),
+            timezone_offset_minutes: -360,
+            memory_mb: 8 * 1024,
+            cpu_count: 4,
+            debugger_present: false,
+            network_mode: NetworkMode::Online,
+            initial_virtual_time_ms: 1_000_000,
+        }
+    }
+
+    pub fn legacy() -> Self {
+        Self {
+            id: "legacy".into(),
+            label: "Legacy workstation".into(),
+            windows_version: "Windows 7 SP1".into(),
+            computer_name: "OFFICE-PC".into(),
+            user_name: "user".into(),
+            locale: "en-US".into(),
+            timezone_offset_minutes: -300,
+            memory_mb: 2 * 1024,
+            cpu_count: 2,
+            debugger_present: false,
+            network_mode: NetworkMode::Online,
+            initial_virtual_time_ms: 500_000,
+        }
+    }
+
+    pub fn hardened() -> Self {
+        Self {
+            id: "hardened".into(),
+            label: "Hardened offline host".into(),
+            windows_version: "Windows 11 24H2".into(),
+            computer_name: "CORP-WKS-042".into(),
+            user_name: "employee".into(),
+            locale: "en-GB".into(),
+            timezone_offset_minutes: 0,
+            memory_mb: 16 * 1024,
+            cpu_count: 8,
+            debugger_present: false,
+            network_mode: NetworkMode::Offline,
+            initial_virtual_time_ms: 2_000_000,
+        }
+    }
+
+    pub fn analysis() -> Self {
+        Self {
+            id: "analysis".into(),
+            label: "Instrumented analysis host".into(),
+            windows_version: "Windows 10 analysis".into(),
+            computer_name: "MALWARE-LAB".into(),
+            user_name: "sandbox".into(),
+            locale: "en-US".into(),
+            timezone_offset_minutes: 0,
+            memory_mb: 1024,
+            cpu_count: 1,
+            debugger_present: true,
+            network_mode: NetworkMode::Sinkhole,
+            initial_virtual_time_ms: 3_000_000,
+        }
+    }
+
+    pub fn presets() -> [Self; 4] {
+        [
+            Self::balanced(),
+            Self::legacy(),
+            Self::hardened(),
+            Self::analysis(),
+        ]
+    }
+
+    fn bounded(mut self) -> Self {
+        self.id = bounded_text(&self.id, 32, "custom");
+        self.label = bounded_text(&self.label, 80, "Custom profile");
+        self.windows_version = bounded_text(&self.windows_version, 80, "Synthetic Windows");
+        self.computer_name = bounded_text(&self.computer_name, 63, "AEGIS-HOST");
+        self.user_name = bounded_text(&self.user_name, 64, "analyst");
+        self.locale = bounded_text(&self.locale, 16, "en-US");
+        self.timezone_offset_minutes = self.timezone_offset_minutes.clamp(-14 * 60, 14 * 60);
+        self.memory_mb = self.memory_mb.clamp(256, 128 * 1024);
+        self.cpu_count = self.cpu_count.clamp(1, 64);
+        self.initial_virtual_time_ms = self.initial_virtual_time_ms.min(86_400_000);
+        self
+    }
+}
+
+fn bounded_text(value: &str, maximum: usize, fallback: &str) -> String {
+    let value: String = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(maximum)
+        .collect();
+    if value.trim().is_empty() {
+        fallback.into()
+    } else {
+        value
     }
 }
 
@@ -174,6 +324,7 @@ pub struct ExecutionProfile {
     pub instruction_limit: u64,
     pub trace_limit: usize,
     pub network_mode: String,
+    pub environment: EnvironmentProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

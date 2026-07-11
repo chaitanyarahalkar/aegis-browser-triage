@@ -1,7 +1,7 @@
 use crate::{
     ApiEvent, ArtifactKind, ArtifactOrigin, DynamicAnalysis, DynamicError, DynamicFinding,
     DynamicOptions, DynamicReport, DynamicSeverity, ExecutionCoverage, ExecutionProfile, FileEvent,
-    HARD_MAX_API_EVENTS, InjectionEvent, InstructionEvent, MemoryEvent, NetworkEvent,
+    HARD_MAX_API_EVENTS, InjectionEvent, InstructionEvent, MemoryEvent, NetworkEvent, NetworkMode,
     PersistenceEvent, ProcessEvent, RegistryEvent, Termination, TimelineEvent,
     api::{CallingConvention, normalize_name, signature},
     artifact::{ArtifactCapture, ArtifactStore, MAX_ARTIFACT_BYTES},
@@ -30,6 +30,7 @@ pub(crate) fn run(
     bytes: &[u8],
     options: DynamicOptions,
 ) -> Result<DynamicAnalysis, DynamicError> {
+    let environment = options.environment.clone();
     let mut loaded = loader::load(bytes)?;
     loaded.memory.map(
         PROCESS_ENV_BASE,
@@ -63,12 +64,13 @@ pub(crate) fn run(
         .write_force(PEB_BASE + 0x10, &PROCESS_ENV_BASE.to_le_bytes())?;
     let profile = ExecutionProfile {
         architecture: "x86 (32-bit)".into(),
-        operating_system: "Synthetic Windows user mode".into(),
+        operating_system: environment.windows_version.clone(),
         image_base: loaded.image_base,
         entry_point: loaded.entry_point,
         instruction_limit: options.max_instructions,
         trace_limit: options.max_trace_events,
-        network_mode: "Synthetic sink; no external access".into(),
+        network_mode: environment.network_mode.description().into(),
+        environment: environment.clone(),
     };
     let mut machine = Machine {
         cpu: Cpu {
@@ -82,7 +84,7 @@ pub(crate) fn run(
         imports: loaded.imports,
         options,
         instruction_count: 0,
-        virtual_time_ms: 1_000_000,
+        virtual_time_ms: environment.initial_virtual_time_ms,
         instructions: Vec::new(),
         api_calls: Vec::new(),
         processes: Vec::new(),
@@ -107,6 +109,7 @@ pub(crate) fn run(
         entry_point: loaded.entry_point,
         tls_callbacks: loaded.tls_callbacks.into(),
         artifacts: ArtifactStore::default(),
+        environment,
     };
     machine.start_execution()?;
     machine.execute();
@@ -203,6 +206,7 @@ struct Machine {
     entry_point: u32,
     tls_callbacks: VecDeque<u32>,
     artifacts: ArtifactStore,
+    environment: crate::EnvironmentProfile,
 }
 
 impl Machine {
@@ -1250,7 +1254,7 @@ impl Machine {
                     let mut info = [0u8; 36];
                     info[0..2].copy_from_slice(&0u16.to_le_bytes());
                     info[4..8].copy_from_slice(&4096u32.to_le_bytes());
-                    info[20..24].copy_from_slice(&4u32.to_le_bytes());
+                    info[20..24].copy_from_slice(&self.environment.cpu_count.to_le_bytes());
                     info[24..28].copy_from_slice(&586u32.to_le_bytes());
                     let _ = self.memory.write(pointer, &info);
                 }
@@ -1265,29 +1269,33 @@ impl Machine {
                     let mut status = [0u8; 64];
                     status[0..4].copy_from_slice(&64u32.to_le_bytes());
                     status[4..8].copy_from_slice(&42u32.to_le_bytes());
-                    status[8..16].copy_from_slice(&(8u64 * 1024 * 1024 * 1024).to_le_bytes());
-                    status[16..24].copy_from_slice(&(5u64 * 1024 * 1024 * 1024).to_le_bytes());
+                    let total = self.environment.memory_mb as u64 * 1024 * 1024;
+                    status[8..16].copy_from_slice(&total.to_le_bytes());
+                    status[16..24].copy_from_slice(&(total * 5 / 8).to_le_bytes());
                     let _ = self.memory.write(pointer, &status);
                 }
                 Ok((
                     1,
-                    "Returned deterministic 8 GiB memory profile".into(),
+                    format!(
+                        "Returned deterministic {} MiB memory profile",
+                        self.environment.memory_mb
+                    ),
                     hex_args(),
                 ))
             }
             "getcomputernamea" | "getcomputernamew" | "getusernamea" | "getusernamew" => {
                 let wide = name.ends_with('w');
                 let value = if name.starts_with("getcomputer") {
-                    "AEGIS-SANDBOX"
+                    self.environment.computer_name.clone()
                 } else {
-                    "analyst"
+                    self.environment.user_name.clone()
                 };
                 let size_pointer = args.get(1).copied().unwrap_or(0);
                 let capacity = self.memory.read_u32(size_pointer).unwrap_or(0) as usize;
                 let written = self.write_guest_string(
                     args.first().copied().unwrap_or(0),
                     capacity,
-                    value,
+                    &value,
                     wide,
                 );
                 if size_pointer != 0 {
@@ -1296,7 +1304,7 @@ impl Machine {
                 Ok((
                     1,
                     format!("Returned synthetic identity {value}"),
-                    vec![value.into()],
+                    vec![value],
                 ))
             }
             "gettemppatha"
@@ -1306,8 +1314,12 @@ impl Machine {
             | "getsystemdirectorya"
             | "getsystemdirectoryw" => {
                 let wide = name.ends_with('w');
+                let temp = format!(
+                    "C:\\Users\\{}\\AppData\\Local\\Temp\\",
+                    self.environment.user_name
+                );
                 let value = if name.starts_with("gettemp") {
-                    "C:\\Users\\analyst\\AppData\\Local\\Temp\\"
+                    temp.as_str()
                 } else if name.starts_with("getsystem") {
                     "C:\\Windows\\System32"
                 } else {
@@ -1633,19 +1645,22 @@ impl Machine {
                     self.memory.read_c_string(name_pointer, 256)
                 };
                 let value = match variable.to_ascii_uppercase().as_str() {
-                    "TEMP" | "TMP" => "C:\\Users\\analyst\\AppData\\Local\\Temp",
-                    "USERNAME" => "analyst",
-                    "COMPUTERNAME" => "AEGIS-SANDBOX",
-                    "WINDIR" => "C:\\Windows",
-                    _ => "",
+                    "TEMP" | "TMP" => format!(
+                        "C:\\Users\\{}\\AppData\\Local\\Temp",
+                        self.environment.user_name
+                    ),
+                    "USERNAME" => self.environment.user_name.clone(),
+                    "COMPUTERNAME" => self.environment.computer_name.clone(),
+                    "WINDIR" => "C:\\Windows".into(),
+                    _ => String::new(),
                 };
                 let destination = args.get(1).copied().unwrap_or(0);
                 let capacity = args.get(2).copied().unwrap_or(0) as usize;
-                let written = self.write_guest_string(destination, capacity, value, wide);
+                let written = self.write_guest_string(destination, capacity, &value, wide);
                 Ok((
                     written as u32,
                     format!("Returned synthetic environment variable {variable}"),
-                    vec![variable, value.into()],
+                    vec![variable, value],
                 ))
             }
             "lstrlena" | "lstrlenw" | "strlen" => {
@@ -1807,17 +1822,25 @@ impl Machine {
                 ))
             }
             "isdebuggerpresent" => Ok((
-                0,
-                "Returned deterministic no-debugger state".into(),
+                u32::from(self.environment.debugger_present),
+                format!(
+                    "Returned deterministic debugger state: {}",
+                    self.environment.debugger_present
+                ),
                 Vec::new(),
             )),
             "checkremotedebuggerpresent" => {
                 if let Some(pointer) = args.get(1).copied().filter(|pointer| *pointer != 0) {
-                    let _ = self.memory.write_u32(pointer, 0);
+                    let _ = self
+                        .memory
+                        .write_u32(pointer, u32::from(self.environment.debugger_present));
                 }
                 Ok((
                     1,
-                    "Returned deterministic no-debugger state".into(),
+                    format!(
+                        "Returned deterministic debugger state: {}",
+                        self.environment.debugger_present
+                    ),
                     hex_args(),
                 ))
             }
@@ -2375,13 +2398,25 @@ impl Machine {
                 } else {
                     self.memory.read_c_string(pointer, 2_048)
                 };
+                let offline = self.environment.network_mode == NetworkMode::Offline;
                 self.network.push(NetworkEvent {
                     operation: "http_open".into(),
                     destination: url.clone(),
                     size: None,
                     preview: None,
-                    synthetic_result: "HTTP 404 from local sink".into(),
+                    synthetic_result: if offline {
+                        "offline profile rejected request".into()
+                    } else {
+                        "HTTP 404 from local sink".into()
+                    },
                 });
+                if offline {
+                    return Ok((
+                        0,
+                        format!("Synthetic offline profile rejected {url}"),
+                        vec![url],
+                    ));
+                }
                 let handle = self
                     .windows
                     .allocate(HandleResource::Internet { label: url.clone() })
@@ -2423,6 +2458,20 @@ impl Machine {
                 let query = self
                     .memory
                     .read_c_string(args.first().copied().unwrap_or(0), 512);
+                if self.environment.network_mode == NetworkMode::Offline {
+                    self.network.push(NetworkEvent {
+                        operation: "dns".into(),
+                        destination: query.clone(),
+                        size: None,
+                        preview: None,
+                        synthetic_result: "offline profile returned host-not-found".into(),
+                    });
+                    return Ok((
+                        0,
+                        format!("Synthetic offline DNS failure for {query}"),
+                        vec![query],
+                    ));
+                }
                 let name_address = NETWORK_RESULT_BASE + 0x40;
                 let ip_address = NETWORK_RESULT_BASE + 0x80;
                 let list_address = NETWORK_RESULT_BASE + 0x90;
@@ -2460,6 +2509,23 @@ impl Machine {
                 let query = self
                     .memory
                     .read_c_string(args.first().copied().unwrap_or(0), 512);
+                if self.environment.network_mode == NetworkMode::Offline {
+                    if let Some(output) = args.get(3).copied().filter(|pointer| *pointer != 0) {
+                        let _ = self.memory.write_u32(output, 0);
+                    }
+                    self.network.push(NetworkEvent {
+                        operation: "dns".into(),
+                        destination: query.clone(),
+                        size: None,
+                        preview: None,
+                        synthetic_result: "offline profile returned host-not-found".into(),
+                    });
+                    return Ok((
+                        11_001,
+                        format!("Synthetic offline DNS failure for {query}"),
+                        vec![query],
+                    ));
+                }
                 let result_address = NETWORK_RESULT_BASE + 0x100;
                 let socket_address = NETWORK_RESULT_BASE + 0x140;
                 let mut info = [0u8; 32];
@@ -2496,16 +2562,25 @@ impl Machine {
             )),
             "connect" => {
                 let destination = self.read_sockaddr(args.get(1).copied().unwrap_or(0));
+                let offline = self.environment.network_mode == NetworkMode::Offline;
                 self.network.push(NetworkEvent {
                     operation: "connect".into(),
                     destination: destination.clone(),
                     size: None,
                     preview: None,
-                    synthetic_result: "connected to local sink".into(),
+                    synthetic_result: if offline {
+                        "offline profile rejected connection".into()
+                    } else {
+                        "connected to local sink".into()
+                    },
                 });
                 Ok((
-                    0,
-                    format!("Captured connection to {destination}"),
+                    if offline { u32::MAX } else { 0 },
+                    if offline {
+                        format!("Synthetic offline connection failure to {destination}")
+                    } else {
+                        format!("Captured connection to {destination}")
+                    },
                     vec![destination],
                 ))
             }
@@ -2516,20 +2591,41 @@ impl Machine {
                     .read(args.get(1).copied().unwrap_or(0), length as usize)
                     .unwrap_or_default();
                 let preview = printable_preview(data);
+                let offline = self.environment.network_mode == NetworkMode::Offline;
                 self.network.push(NetworkEvent {
                     operation: "send".into(),
                     destination: format!("socket:0x{:x}", args.first().copied().unwrap_or(0)),
                     size: Some(length),
                     preview: Some(preview.clone()),
-                    synthetic_result: "accepted by local sink".into(),
+                    synthetic_result: if offline {
+                        "offline profile rejected send".into()
+                    } else {
+                        "accepted by local sink".into()
+                    },
                 });
                 Ok((
-                    length,
-                    format!("Captured {length} outbound bytes"),
+                    if offline { u32::MAX } else { length },
+                    if offline {
+                        "Synthetic offline send failure".into()
+                    } else {
+                        format!("Captured {length} outbound bytes")
+                    },
                     vec![preview],
                 ))
             }
-            "recv" => Ok((0, "Synthetic network sink returned EOF".into(), hex_args())),
+            "recv" => Ok((
+                if self.environment.network_mode == NetworkMode::Offline {
+                    u32::MAX
+                } else {
+                    0
+                },
+                if self.environment.network_mode == NetworkMode::Offline {
+                    "Synthetic offline receive failure".into()
+                } else {
+                    "Synthetic network sink returned EOF".into()
+                },
+                hex_args(),
+            )),
             "closehandle" | "regclosekey" | "internetclosehandle" => {
                 let handle = args.first().copied().unwrap_or(0);
                 let description = self
@@ -3052,6 +3148,7 @@ mod tests {
             options: DynamicOptions {
                 max_instructions: 1_000,
                 max_trace_events: 100,
+                ..DynamicOptions::default()
             },
             instruction_count: 0,
             virtual_time_ms: 1_000_000,
@@ -3079,6 +3176,7 @@ mod tests {
             entry_point: 0x1000,
             tls_callbacks: VecDeque::new(),
             artifacts: ArtifactStore::default(),
+            environment: crate::EnvironmentProfile::default(),
         }
     }
 
@@ -3249,5 +3347,23 @@ mod tests {
             .unwrap();
         assert_eq!(finding.severity, DynamicSeverity::High);
         assert!(finding.evidence[0].contains("AegisUpdater"));
+    }
+
+    #[test]
+    fn offline_profile_changes_network_results_without_host_access() {
+        let mut machine = machine_with_code(&[0xf4]);
+        machine.environment = crate::EnvironmentProfile::hardened();
+        machine.memory.write(0x3000, b"example.test\0").unwrap();
+        let (dns, summary, _) = machine.emulate_api("gethostbyname", &[0x3000]).unwrap();
+        let (connect, _, _) = machine.emulate_api("connect", &[0, 0, 0]).unwrap();
+        assert_eq!(dns, 0);
+        assert_eq!(connect, u32::MAX);
+        assert!(summary.contains("offline"));
+        assert!(
+            machine
+                .network
+                .iter()
+                .all(|event| event.synthetic_result.contains("offline"))
+        );
     }
 }
