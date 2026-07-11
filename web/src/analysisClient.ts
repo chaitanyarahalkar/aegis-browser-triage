@@ -17,6 +17,7 @@ type PendingHex = {
 
 export class AnalysisClient {
   private worker: Worker | null = null
+  private workerReady = false
   private pendingAnalysis = new Map<string, PendingAnalysis>()
   private pendingHex = new Map<string, PendingHex>()
 
@@ -33,6 +34,10 @@ export class AnalysisClient {
     })
   }
 
+  warmup(): void {
+    this.ensureWorker()
+  }
+
   readHex(offset: number, length: number): Promise<{ offset: number; bytes: Uint8Array }> {
     const worker = this.worker
     if (!worker) return Promise.reject(new Error('No sample is open'))
@@ -45,28 +50,40 @@ export class AnalysisClient {
   }
 
   cancel(reason = 'Analysis cancelled'): void {
-    if (this.worker || this.pendingAnalysis.size || this.pendingHex.size) {
+    if (this.pendingAnalysis.size || this.pendingHex.size) {
       this.failAndReset(new Error(reason))
+    } else {
+      this.worker?.postMessage({ type: 'close-sample' })
     }
   }
 
   close(): void {
-    if (this.worker) this.worker.postMessage({ type: 'close-sample' })
     this.cancel('Sample closed')
+  }
+
+  dispose(): void {
+    this.failAndReset(new Error('Analyzer disposed'))
   }
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
     const worker = new Worker(new URL('./analyzer.worker.ts', import.meta.url), { type: 'module', name: 'aegis-analyzer' })
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.handleMessage(event.data)
-    worker.onerror = () => this.failAndReset(new Error('The isolated analyzer worker crashed'))
+    worker.onerror = () => this.failAndReset(new Error(
+      this.workerReady
+        ? 'The isolated analyzer worker crashed'
+        : 'The analyzer could not start. The app may have been updated; reload it and select the file again.',
+    ))
     worker.onmessageerror = () => this.failAndReset(new Error('The analyzer returned an unreadable response'))
     this.worker = worker
     return worker
   }
 
   private handleMessage(message: WorkerResponse): void {
-    if (message.type === 'ready') return
+    if (message.type === 'ready') {
+      this.workerReady = true
+      return
+    }
     if (message.type === 'progress') {
       this.pendingAnalysis.get(message.jobId)?.onProgress(message.stage)
       return
@@ -98,6 +115,6 @@ export class AnalysisClient {
     this.pendingHex.clear()
     this.worker?.terminate()
     this.worker = null
+    this.workerReady = false
   }
 }
-

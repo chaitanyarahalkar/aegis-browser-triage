@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 
 const safePe = readFileSync(new URL('../public/fixtures/aegis-safe-dynamic-pe32.exe', import.meta.url))
+const safeMacos = readFileSync(new URL('../../fixtures/aegis-safe-sample-macos', import.meta.url))
 
 async function loadSafeDemo(page: import('@playwright/test').Page) {
   await page.goto('/')
@@ -77,6 +78,24 @@ test('handles unsupported and malformed binaries safely', async ({ page }) => {
   await input.setInputFiles({ name: 'broken.exe', mimeType: 'application/octet-stream', buffer: Buffer.from([0x4d, 0x5a, 0, 0]) })
   await expect(page.getByRole('alert')).toContainText('Analysis stopped')
   await expect(page.getByRole('alert')).toContainText('failed to parse PE')
+})
+
+test('analyzes the supplied ARM64 macOS fixture without crashing the worker', async ({ page }) => {
+  const workerRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('.worker')) workerRequests.push(request.url())
+  })
+  await page.goto('/')
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'aegis-safe-sample-macos',
+    mimeType: 'application/octet-stream',
+    buffer: safeMacos,
+  })
+
+  await expect(page.getByText('aegis-safe-sample-macos')).toBeVisible()
+  await expect(page.locator('.sample-title')).toContainText('Mach-O · 64-bit ARM64')
+  await expect(page.getByRole('heading', { name: 'Findings' })).toBeVisible()
+  expect(workerRequests.some((url) => url.endsWith('/assets/analyzer.worker.js'))).toBe(true)
 })
 
 test('exports a combined static and dynamic JSON report', async ({ page }) => {

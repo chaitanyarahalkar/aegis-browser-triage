@@ -48,9 +48,12 @@ export default function App() {
   const [dynamicReport, setDynamicReport] = useState<DynamicReport | null>(null)
   const [dynamicError, setDynamicError] = useState<string | null>(null)
 
-  useEffect(() => () => {
-    staticClient.close()
-    dynamicClient.close()
+  useEffect(() => {
+    staticClient.warmup()
+    return () => {
+      staticClient.dispose()
+      dynamicClient.close()
+    }
   }, [dynamicClient, staticClient])
 
   const resetDynamic = useCallback(() => {
@@ -199,7 +202,9 @@ export default function App() {
         {status === 'error' && error && (
           <div className="notice error-notice" role="alert">
             <div><strong>Analysis stopped</strong><span>{error}</span></div>
-            <button type="button" onClick={closeSample}>Dismiss</button>
+            <button type="button" onClick={() => error.startsWith('The analyzer could not start') ? window.location.reload() : closeSample}>
+              {error.startsWith('The analyzer could not start') ? 'Reload app' : 'Dismiss'}
+            </button>
           </div>
         )}
 

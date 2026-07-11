@@ -57,6 +57,28 @@ fn parses_minimal_macho64() {
 }
 
 #[test]
+fn parses_supplied_arm64_macos_fixture() {
+    let bytes = include_bytes!("../../../fixtures/aegis-safe-sample-macos");
+    let report = analyze(
+        "aegis-safe-sample-macos",
+        bytes,
+        &AnalysisOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(report.sample.detected_format, BinaryFormat::MachO);
+    assert!(
+        report
+            .sample
+            .architecture
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ARM64")
+    );
+    assert!(!report.sections.is_empty());
+}
+
+#[test]
 fn parses_wasm_function_and_export() {
     let wasm = [
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,

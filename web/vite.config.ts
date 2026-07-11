@@ -12,6 +12,13 @@ const productionHeaders = {
 export default defineConfig(({ command }) => ({
   base: './',
   plugins: [react()],
+  worker: {
+    rolldownOptions: {
+      output: {
+        entryFileNames: 'assets/[name].js',
+      },
+    },
+  },
   server: {
     headers: command === 'serve' ? {
       ...productionHeaders,
