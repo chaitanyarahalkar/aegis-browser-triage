@@ -1,0 +1,23 @@
+[package]
+name = "analysis-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+analysis-core = { path = "../crates/analysis-core" }
+
+[[bin]]
+name = "analyze"
+path = "fuzz_targets/analyze.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+

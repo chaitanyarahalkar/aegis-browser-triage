@@ -1,0 +1,32 @@
+{
+  "name": "aegis-browser-triage",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "wasm": "wasm-pack build ../crates/analysis-wasm --target web --out-dir ../../web/src/generated/analysis-wasm --out-name analyzer",
+    "dev": "npm run wasm && vite --host 127.0.0.1",
+    "build": "npm run wasm && tsc -b && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "6.0.3",
+    "vite": "8.1.4",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "jsdom": "29.1.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

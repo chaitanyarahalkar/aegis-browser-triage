@@ -1,0 +1,19 @@
+[package]
+name = "analysis-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+analysis-core = { path = "../analysis-core" }
+serde_json.workspace = true
+wasm-bindgen.workspace = true
+
+[package.metadata.wasm-pack.profile.release]
+# Rust 1.97 emits bulk-memory operations that the wasm-pack bundled Binaryen
+# build does not yet validate correctly on this platform. The Rust release
+# profile still applies LTO, size optimization, stripping, and panic aborts.
+wasm-opt = false

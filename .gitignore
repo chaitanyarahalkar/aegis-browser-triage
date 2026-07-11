@@ -1,0 +1,9 @@
+**/target/
+/web/node_modules/
+/web/dist/
+/web/src/generated/
+/web/playwright-report/
+/web/test-results/
+*.log
+*.tsbuildinfo
+.DS_Store
