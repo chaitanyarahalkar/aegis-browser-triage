@@ -4,14 +4,14 @@
 
 NOPE is a local-only binary triage workbench that runs in the browser. A Rust
 engine performs static inspection of PE, ELF, Mach-O, and WebAssembly files. A
-second Rust engine can emulate 32-bit x86 and 64-bit x86-64 Windows PE samples inside a dedicated
-Web Worker. A third, lazy-loaded Rust engine compiles and scans YARA rules with
+second Rust engine emulates 32-bit x86 and 64-bit x86-64 Windows PE samples plus
+Linux ELF64/x86-64 executables inside a dedicated Web Worker. A third, lazy-loaded Rust engine compiles and scans YARA rules with
 YARA-X entirely in the browser.
 
 Samples are never uploaded or executed by the host. Dynamic analysis uses an
-interpreter, an in-memory PE loader, and synthetic Windows APIs. Files, registry
-keys, processes, memory mappings, time, and network activity exist only as
-modeled events in the worker.
+interpreter, in-memory PE and ELF loaders, and synthetic Windows/Linux userspaces.
+Files, registry keys, processes, memory mappings, time, and network activity exist
+only as modeled events in the worker.
 
 ## Capabilities
 
@@ -28,6 +28,15 @@ Static reports include:
 
 Dynamic reports currently include:
 
+- Linux ELF64/x86-64 `ET_EXEC` and basic PIE loading, System V register and stack
+  rules, `argc`/`argv`/`envp`/auxv initialization, common x86-64 relocations, and
+  bounded synthetic libc import stubs
+- Direct Linux syscall modeling for file I/O, memory mappings/protection, process
+  metadata, clocks/randomness, sockets, and denied process execution, with a
+  deterministic virtual filesystem and scripted network sink
+- Linux runtime artifacts, syscall timelines, findings, profile matrices, and
+  API-level provenance from loaded-image/file/network bytes into virtual-file,
+  network-request, process-command, and executable-memory sinks
 - PE32/x86 image loading, TLS callbacks, imports, dynamic API resolution, a
   minimal PEB/TEB, stack, and guest memory
 - PE64/x86-64 loading with sparse 64-bit guest addresses, RIP- and GS-relative
@@ -85,7 +94,8 @@ YARA analysis includes:
 - PE, ELF, Mach-O, .NET, hash, math, string, and time modules
 
 This is a triage tool, not a clean or malicious verdict. The interpreter
-supports a useful subset of x86 and Windows APIs; unsupported instructions,
+supports a useful subset of x86/x64 instructions, Windows APIs, Linux syscalls,
+and libc entry points; unsupported instructions or interfaces,
 malformed memory access, timeouts, and instruction limits stop safely and are
 reported.
 
@@ -124,7 +134,7 @@ PATH="$(brew --prefix rustup)/bin:$PATH" npm run build
 
 - `crates/analysis-core`: platform-neutral static analysis and report schema
 - `crates/analysis-wasm`: static `wasm-bindgen` adapter
-- `crates/analysis-dynamic`: bounded PE32/PE64 loaders, x86/x64 interpreters, and virtual APIs
+- `crates/analysis-dynamic`: bounded PE32/PE64 and ELF64 loaders, x86/x64 interpreters, and synthetic Windows/Linux runtimes
 - `crates/analysis-dynamic-wasm`: dynamic `wasm-bindgen` adapter
 - `crates/analysis-yara`: bounded YARA-X compiler, scanner, and report schema
 - `crates/analysis-yara-wasm`: YARA `wasm-bindgen` adapter

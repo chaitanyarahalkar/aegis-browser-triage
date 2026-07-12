@@ -61,6 +61,56 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await expect(page.getByText('Dynamic v14', { exact: true })).toBeVisible()
 })
 
+test('runs Linux ELF64 through the bounded syscall runtime end to end', async ({ page, isMobile }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Use safe Linux demo' }).click()
+  await expect(page.getByText('nope-safe-dynamic-linux-x64')).toBeVisible()
+  await expect(page.locator('.sample-title')).toContainText('ELF · 64-bit X86_64')
+
+  await page.getByRole('tab', { name: /^Dynamic/ }).click()
+  await expect(page.getByText('Linux ELF64/x86-64 interpreter', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Environment profile')).toHaveValue('balanced')
+  await expect(page.getByLabel('Environment profile').getByRole('option', { name: 'Linux workstation' })).toBeAttached()
+  await page.getByRole('button', { name: 'Run selected profile' }).click()
+  await expect(page.getByText('Exit 0', { exact: true })).toBeVisible()
+  await expect(page.getByText('Linux 6.8 (synthetic user mode) · online', { exact: true })).toBeVisible()
+  await expect(page.getByText('Linux user-mode execution completed', { exact: true })).toBeVisible()
+  await expect(page.getByText('Process execution requested', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: /^Behavior/ }).click()
+  await expect(page.getByRole('cell', { name: '/tmp/nope-linux-artifact.bin', exact: true }).last()).toBeVisible()
+  await expect(page.getByRole('cell', { name: '/bin/sh', exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: '10.20.30.40:8080', exact: true }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: /^API calls/ }).click()
+  for (const call of ['openat', 'mmap', 'mprotect', 'connect', 'sendto', 'recvfrom', 'execve', 'exit_group']) {
+    await expect(page.getByText(`linux!${call}`, { exact: true })).toBeVisible()
+  }
+
+  await page.getByRole('button', { name: /^Provenance/ }).click()
+  await expect(page.getByRole('heading', { name: 'Explainable data flows' })).toBeVisible()
+  await expect(page.getByText('sample: loaded ELF64 image', { exact: true }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: /^Network/ }).click()
+  await expect(page.getByRole('cell', { name: '10.20.30.40:8080', exact: true })).toBeVisible()
+
+  if (!isMobile) {
+    await page.getByRole('button', { name: /^Artifacts/ }).click()
+    await expect(page.getByRole('cell', { name: 'nope-linux-artifact.bin', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Scan artifacts with YARA' }).click()
+    await expect(page.getByText('NOPE_Safe_Linux_Artifact', { exact: true }).first()).toBeVisible()
+  }
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export report' }).click()
+  const download = await downloadPromise
+  const json = JSON.parse(readFileSync(await download.path()!, 'utf8'))
+  expect(json.dynamic.profile.operating_system).toBe('Linux 6.8 (synthetic user mode)')
+  expect(json.dynamic.filesystem.some((event: { path: string }) => event.path === '/tmp/nope-linux-artifact.bin')).toBe(true)
+  expect(json.dynamic.provenance_flows.length).toBeGreaterThanOrEqual(3)
+  expect(json.dynamic.artifacts.every((artifact: Record<string, unknown>) => !('bytes' in artifact))).toBe(true)
+})
+
 test('explores static capabilities, disassembly, and control flow', async ({ page, isMobile }) => {
   await loadCodeDemo(page)
   await page.getByRole('tab', { name: /^Code/ }).click()

@@ -6,6 +6,7 @@ pub(crate) struct Cpu64 {
     pub gpr: [u64; 16],
     pub rip: u64,
     pub gs_base: u64,
+    pub fs_base: u64,
     pub zf: bool,
     pub sf: bool,
     pub cf: bool,
@@ -74,10 +75,10 @@ impl Cpu64 {
             Register::None => 0,
             register => self.read_register(register)?,
         };
-        let segment = if instruction.memory_segment() == Register::GS {
-            self.gs_base
-        } else {
-            0
+        let segment = match instruction.memory_segment() {
+            Register::GS => self.gs_base,
+            Register::FS => self.fs_base,
+            _ => 0,
         };
         Ok(segment
             .wrapping_add(base)

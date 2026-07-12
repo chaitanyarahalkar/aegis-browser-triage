@@ -4,9 +4,9 @@
 
 NOPE lets an analyst inspect an untrusted binary without transmitting it or
 letting it execute as host code. Static analysis treats every sample as bytes.
-Dynamic analysis interprets guest x86 instructions and models a small Windows
-environment; it never passes guest code to the browser's WebAssembly engine or
-the host CPU.
+Dynamic analysis interprets guest x86/x64 instructions and models small Windows
+and Linux userspaces; it never passes guest code to the browser's WebAssembly
+engine or the host CPU.
 
 Uploaded WebAssembly is parsed with `wasmparser` and is never instantiated.
 
@@ -29,8 +29,8 @@ flowchart LR
   UI -->|"explicit run and transfer"| DW["Dynamic worker"]
   UI -->|"explicit compile and scan"| YW["YARA worker"]
   SW --> SP["Rust parsers"]
-  DW --> EMU["PE32 loader and x86 interpreter"]
-  EMU --> VOS["Synthetic Windows APIs"]
+  DW --> EMU["PE/ELF loaders and x86/x64 interpreter"]
+  EMU --> VOS["Synthetic Windows APIs or Linux syscalls"]
   VOS --> REP["Behavior report"]
   EMU --> ART["Ephemeral artifact store"]
   ART -->|"explicit scan or confirmed export"| UI
@@ -63,19 +63,31 @@ Static analysis:
 
 Dynamic analysis:
 
-- PE32/x86 and PE64/x86-64 only; other formats remain static-only
+- PE32/x86, PE64/x86-64, and little-endian Linux ELF64/x86-64 `ET_EXEC` or
+  basic PIE executables only; other formats and architectures remain static-only
 - Explicit user initiation after static analysis
 - Separate worker and a 10-second UI watchdog
 - 1,000,000 instructions and 2,000 trace records by default
 - Hard ceilings of 10,000,000 instructions, 5,000 traces, 100,000 API calls,
   and 256 MiB of mapped guest memory
 - Deterministic virtual time and synthetic handles
-- Four bounded deterministic environment presets vary synthetic Windows version,
-  identity, locale, timezone, CPU/RAM, debugger state, clock, and network disposition
+- Four bounded deterministic environment presets per supported OS family vary
+  synthetic identity, locale, timezone, CPU/RAM, debugger state, clock, and
+  network disposition
 - A profile matrix is limited to four sequential runs in one worker; each run retains
   the same instruction, memory, trace, API, artifact, and watchdog boundaries
 - In-memory files, registry keys, network sink, process events, mappings, and
   synthetic remote-process address spaces
+- Linux execution receives a synthetic initial stack with bounded `argc`, `argv`,
+  `envp`, and auxv values. ELF segments, BSS, a 1 MiB stack, a 16 MiB brk heap,
+  and bounded `mmap` regions exist only in sparse guest memory
+- Linux direct syscalls and libc stubs operate only on the virtual filesystem,
+  process metadata, clock, random source, guest memory, and scripted socket sink.
+  `execve`/`system` requests are recorded and denied; no host syscall, dynamic
+  loader, libc, process, or file descriptor is invoked
+- Linux relocation support is intentionally bounded to common relative, global,
+  PLT jump-slot, and 64-bit symbol relocations. Unsupported relocations are
+  reported, and emulator-owned import stubs never point to host or Wasm functions
 - 4,096 live handles, 1 MiB per virtual file, and 16 MiB total virtual file data
 - Kernel objects, enumeration snapshots, restricted tokens, shared mappings, named
   pipes, resources, and crypto providers are synthetic handles under the same limit
@@ -169,7 +181,8 @@ isolated profile or machine for highly sensitive samples.
 Static and emulated behavior are evidence, not a malware verdict. Packed,
 encrypted, self-modifying, multi-process, kernel-mode, environment-dependent,
 or runtime-downloaded behavior may be missed. The current interpreter is not a
-complete x86 CPU or Windows implementation; a sample can evade or simply exceed
+complete x86 CPU, Windows implementation, Linux kernel, dynamic linker, or libc;
+a sample can evade or simply exceed
 its supported surface.
 
 Static recursive disassembly is also heuristic. Indirect calls, jump tables,
@@ -187,6 +200,14 @@ generated-code entry/import heuristics extend compatibility without mapping a re
 It does not duplicate every PE32 API model, x86 `FS:[0]` SEH chain, or full Windows
 x64 language-specific unwinding; unsupported paths terminate with structured
 diagnostics.
+
+Linux ELF64 support covers the System V integer calling convention, direct
+syscalls, initial process stack/auxv, common relocations, basic synthetic libc
+startup/imports, and deterministic file, memory, process, clock, and socket
+behavior. It does not implement a real `ld.so` or glibc, shared-object loading,
+signals, `clone`/multi-thread scheduling, kernel ioctls, full TLS, or every x86-64
+instruction and syscall. Those paths return a conservative fallback or stop with
+structured diagnostics while remaining inside the worker.
 
 Provenance is intentionally API-level and follows modeled range writes, copies,
 conversions, and crypto outputs. It is not whole-CPU taint propagation or symbolic

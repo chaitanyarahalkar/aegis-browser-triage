@@ -4,11 +4,13 @@ mod cpu;
 mod cpu64;
 mod engine;
 mod engine64;
+mod engine_elf64;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixture;
 mod generation;
 mod loader;
 mod loader64;
+mod loader_elf64;
 mod memory;
 mod memory64;
 mod model;
@@ -84,13 +86,22 @@ pub fn analyze_dynamic_with_artifacts(
     if bytes.len() > analysis_core_limit() {
         return Err(DynamicError::TooLarge);
     }
-    let pe =
-        goblin::pe::PE::parse(bytes).map_err(|error| DynamicError::InvalidPe(error.to_string()))?;
-    if pe.is_64 {
-        engine64::run(name.into(), bytes, options.clone().bounded())
-    } else {
-        engine::run(name.into(), bytes, options.clone().bounded())
+    let name = name.into();
+    if bytes.starts_with(b"\x7fELF") {
+        return engine_elf64::run(name, bytes, options.clone().bounded());
     }
+    if bytes.starts_with(b"MZ") {
+        let pe = goblin::pe::PE::parse(bytes)
+            .map_err(|error| DynamicError::InvalidPe(error.to_string()))?;
+        return if pe.is_64 {
+            engine64::run(name, bytes, options.clone().bounded())
+        } else {
+            engine::run(name, bytes, options.clone().bounded())
+        };
+    }
+    Err(DynamicError::UnsupportedTarget(
+        "dynamic analysis supports PE32/x86, PE64/x86-64, and ELF64/x86-64 executables".into(),
+    ))
 }
 
 const fn analysis_core_limit() -> usize {
@@ -148,6 +159,153 @@ mod tests {
         assert_eq!(report.coverage.modeled_api_calls, 4);
         assert_eq!(report.coverage.unmodeled_api_calls, 0);
         assert!(report.coverage.unique_instruction_addresses >= 8);
+    }
+
+    #[test]
+    fn safe_elf64_executes_modeled_linux_syscalls_end_to_end() {
+        let bytes = fixture::safe_dynamic_elf64();
+        let analysis = analyze_dynamic_with_artifacts(
+            "nope-safe-dynamic-linux-x64",
+            &bytes,
+            &DynamicOptions::default(),
+        )
+        .unwrap();
+        let report = &analysis.report;
+        assert!(matches!(
+            report.termination,
+            Termination::ExitProcess { code: 0 }
+        ));
+        assert_eq!(
+            report.profile.operating_system,
+            "Linux 6.8 (synthetic user mode)"
+        );
+        let calls: Vec<_> = report
+            .api_calls
+            .iter()
+            .map(|event| event.name.as_str())
+            .collect();
+        for expected in [
+            "write",
+            "openat",
+            "mmap",
+            "mprotect",
+            "socket",
+            "connect",
+            "sendto",
+            "recvfrom",
+            "execve",
+            "exit_group",
+        ] {
+            assert!(
+                calls.contains(&expected),
+                "missing syscall {expected}: {calls:?}"
+            );
+        }
+        assert!(report.filesystem.iter().any(|event| {
+            event.operation == "write" && event.path == "/tmp/nope-linux-artifact.bin"
+        }));
+        assert!(report.network.iter().any(|event| {
+            event.operation == "connect" && event.destination == "10.20.30.40:8080"
+        }));
+        assert!(
+            report
+                .processes
+                .iter()
+                .any(|event| { event.operation == "execve" && event.command == "/bin/sh" })
+        );
+        let artifact = report
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.path.as_deref() == Some("/tmp/nope-linux-artifact.bin"))
+            .expect("virtual file artifact");
+        assert!(analysis.artifact_bytes(&artifact.id).is_some());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.id == "linux-process-execution")
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.id == "linux-network-activity")
+        );
+        for sink in [
+            ProvenanceSinkKind::VirtualFile,
+            ProvenanceSinkKind::NetworkRequest,
+            ProvenanceSinkKind::ProcessCommand,
+        ] {
+            assert!(
+                report.provenance_flows.iter().any(|flow| flow.sink == sink),
+                "missing Linux provenance flow for {sink:?}"
+            );
+        }
+        assert_eq!(report.coverage.unmodeled_api_calls, 0);
+        assert_eq!(report.coverage.modeled_api_calls, report.api_calls.len());
+    }
+
+    #[test]
+    fn elf64_reports_are_deterministic_bounded_and_profile_aware() {
+        let bytes = fixture::safe_dynamic_elf64();
+        let first = analyze_dynamic("linux-demo", &bytes, &DynamicOptions::default()).unwrap();
+        let second = analyze_dynamic("linux-demo", &bytes, &DynamicOptions::default()).unwrap();
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap()
+        );
+
+        let mut loop_bytes = bytes.clone();
+        loop_bytes[0x200..0x202].copy_from_slice(&[0xeb, 0xfe]);
+        let limited = analyze_dynamic(
+            "linux-loop",
+            &loop_bytes,
+            &DynamicOptions {
+                max_instructions: 256,
+                max_trace_events: 32,
+                ..DynamicOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(limited.termination, Termination::InstructionLimit));
+        assert_eq!(limited.instruction_count, 256);
+
+        let offline = analyze_dynamic(
+            "linux-offline",
+            &bytes,
+            &DynamicOptions {
+                environment: EnvironmentProfile::hardened(),
+                ..DynamicOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            offline.profile.environment.network_mode,
+            NetworkMode::Offline
+        );
+        assert!(offline.network.iter().any(|event| {
+            event.operation == "connect" && event.synthetic_result == "offline profile"
+        }));
+    }
+
+    #[test]
+    fn elf64_rejects_wrong_architecture_and_malformed_inputs_without_panicking() {
+        let bytes = fixture::safe_dynamic_elf64();
+        for length in [1, 4, 16, 63, 64, 119, 511, 4095, bytes.len() - 1] {
+            assert!(
+                analyze_dynamic(
+                    "truncated-linux",
+                    &bytes[..length],
+                    &DynamicOptions::default()
+                )
+                .is_err()
+            );
+        }
+        let mut arm64 = bytes;
+        arm64[18..20].copy_from_slice(&183u16.to_le_bytes());
+        let error = analyze_dynamic("linux-arm64", &arm64, &DynamicOptions::default())
+            .expect_err("ELF64 arm64 must be rejected by the x86-64 interpreter");
+        assert!(error.to_string().contains("ELF64 x86-64"));
     }
 
     #[test]
@@ -739,9 +897,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_pe32_targets() {
+    fn rejects_unsupported_dynamic_targets() {
         let error =
             analyze_dynamic("wasm", b"\0asm\x01\0\0\0", &DynamicOptions::default()).unwrap_err();
-        assert!(matches!(error, DynamicError::InvalidPe(_)));
+        assert!(matches!(error, DynamicError::UnsupportedTarget(_)));
     }
 }

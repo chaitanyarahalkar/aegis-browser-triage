@@ -29,6 +29,12 @@ const ENVIRONMENT_PROFILES: DynamicEnvironmentProfile[] = [
   { id: 'hardened', label: 'Hardened offline host', windows_version: 'Windows 11 24H2', computer_name: 'CORP-WKS-042', user_name: 'employee', locale: 'en-GB', timezone_offset_minutes: 0, memory_mb: 16384, cpu_count: 8, debugger_present: false, network_mode: 'offline', initial_virtual_time_ms: 2_000_000 },
   { id: 'analysis', label: 'Instrumented analysis host', windows_version: 'Windows 10 analysis', computer_name: 'MALWARE-LAB', user_name: 'sandbox', locale: 'en-US', timezone_offset_minutes: 0, memory_mb: 1024, cpu_count: 1, debugger_present: true, network_mode: 'sinkhole', initial_virtual_time_ms: 3_000_000 },
 ]
+const LINUX_ENVIRONMENT_PROFILES: DynamicEnvironmentProfile[] = [
+  { id: 'balanced', label: 'Linux workstation', windows_version: 'Linux 6.8', computer_name: 'nope-workstation', user_name: 'analyst', locale: 'en-US', timezone_offset_minutes: -360, memory_mb: 8192, cpu_count: 4, debugger_present: false, network_mode: 'online', initial_virtual_time_ms: 1_000_000 },
+  { id: 'legacy', label: 'Legacy Linux server', windows_version: 'Linux 4.19', computer_name: 'legacy-server', user_name: 'service', locale: 'en-US', timezone_offset_minutes: 0, memory_mb: 2048, cpu_count: 2, debugger_present: false, network_mode: 'online', initial_virtual_time_ms: 500_000 },
+  { id: 'hardened', label: 'Hardened offline Linux', windows_version: 'Linux 6.8 hardened', computer_name: 'corp-linux-042', user_name: 'employee', locale: 'en-GB', timezone_offset_minutes: 0, memory_mb: 16384, cpu_count: 8, debugger_present: false, network_mode: 'offline', initial_virtual_time_ms: 2_000_000 },
+  { id: 'analysis', label: 'Instrumented Linux sandbox', windows_version: 'Linux 6.8 analysis', computer_name: 'nope-linux-lab', user_name: 'sandbox', locale: 'en-US', timezone_offset_minutes: 0, memory_mb: 1024, cpu_count: 1, debugger_present: true, network_mode: 'sinkhole', initial_virtual_time_ms: 3_000_000 },
+]
 type AppStatus = 'idle' | 'reading' | 'analyzing' | 'done' | 'error'
 type DynamicStatus = 'idle' | 'running' | 'done' | 'error'
 type YaraStatus = 'idle' | 'running' | 'done' | 'error'
@@ -42,7 +48,7 @@ const progressLabels: Record<ProgressStage, string> = {
 
 const dynamicProgressLabels: Record<DynamicProgressStage, string> = {
   'loading-engine': 'Loading x86/x64 interpreter',
-  'loading-image': 'Mapping PE image',
+  'loading-image': 'Mapping executable image',
   executing: 'Emulating instructions',
   finalizing: 'Preparing behavior report',
 }
@@ -87,6 +93,10 @@ export default function App() {
   const [artifactYara, setArtifactYara] = useState<ArtifactYaraResult[]>([])
   const [artifactYaraStatus, setArtifactYaraStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [artifactYaraError, setArtifactYaraError] = useState<string | null>(null)
+  const dynamicEnvironments = useMemo(
+    () => (report?.format as Record<string, unknown> | undefined)?.kind === 'elf' ? LINUX_ENVIRONMENT_PROFILES : ENVIRONMENT_PROFILES,
+    [report],
+  )
 
   useEffect(() => {
     staticClient.warmup()
@@ -184,6 +194,19 @@ export default function App() {
       await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Safe PE64 fixture could not be loaded')
+      setStatus('error')
+    }
+  }, [inspectFile])
+
+  const analyzeLinuxDemo = useCallback(async () => {
+    try {
+      const name = 'nope-safe-dynamic-linux-x64'
+      const response = await fetch(`${import.meta.env.BASE_URL}fixtures/${name}`)
+      if (!response.ok) throw new Error('Safe Linux fixture could not be loaded')
+      const bytes = await response.arrayBuffer()
+      await inspectFile(new File([bytes], name, { type: 'application/octet-stream' }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Safe Linux fixture could not be loaded')
       setStatus('error')
     }
   }, [inspectFile])
@@ -317,7 +340,7 @@ export default function App() {
     setArtifactYaraError(null)
     try {
       const buffer = await currentFile.arrayBuffer()
-      const environment = ENVIRONMENT_PROFILES.find((profile) => profile.id === dynamicProfileId) ?? ENVIRONMENT_PROFILES[0]
+      const environment = dynamicEnvironments.find((profile) => profile.id === dynamicProfileId) ?? dynamicEnvironments[0]
       const result = await dynamicClient.analyze(currentFile, buffer, setDynamicStage, environment)
       if (dynamicRun.current !== run) return
       setDynamicReport(result)
@@ -328,7 +351,7 @@ export default function App() {
       setDynamicError(cause instanceof Error ? cause.message : 'Dynamic analysis failed unexpectedly.')
       setDynamicStatus('error')
     }
-  }, [currentFile, dynamicClient, dynamicProfileId])
+  }, [currentFile, dynamicClient, dynamicEnvironments, dynamicProfileId])
 
   const runDynamicProfiles = useCallback(async () => {
     if (!currentFile) return
@@ -337,7 +360,7 @@ export default function App() {
     setArtifactYara([]); setArtifactYaraStatus('idle'); setArtifactYaraError(null)
     try {
       const buffer = await currentFile.arrayBuffer()
-      const results = await dynamicClient.analyzeProfiles(currentFile, buffer, ENVIRONMENT_PROFILES, setDynamicStage)
+      const results = await dynamicClient.analyzeProfiles(currentFile, buffer, dynamicEnvironments, setDynamicStage)
       if (dynamicRun.current !== run) return
       setDynamicReports(results)
       setDynamicReport(results.find((result) => result.profile.environment.id === dynamicProfileId) ?? results[0])
@@ -347,7 +370,7 @@ export default function App() {
       setDynamicError(cause instanceof Error ? cause.message : 'Profile matrix analysis failed unexpectedly.')
       setDynamicStatus('error')
     }
-  }, [currentFile, dynamicClient, dynamicProfileId])
+  }, [currentFile, dynamicClient, dynamicEnvironments, dynamicProfileId])
 
   const selectDynamicProfile = useCallback((profileId: string) => {
     setDynamicProfileId(profileId)
@@ -433,6 +456,7 @@ export default function App() {
               inspectFile={inspectFile}
               analyzeDemo={analyzeDemo}
               analyzePe64Demo={analyzePe64Demo}
+              analyzeLinuxDemo={analyzeLinuxDemo}
               analyzeCodeDemo={analyzeCodeDemo}
               analyzePe64ParityDemo={analyzePe64ParityDemo}
               analyzePe64UnpackingDemo={analyzePe64UnpackingDemo}
@@ -510,13 +534,14 @@ export default function App() {
   )
 }
 
-function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzeCodeDemo, analyzePe64ParityDemo, analyzePe64UnpackingDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
+function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo, analyzePe64Demo, analyzeLinuxDemo, analyzeCodeDemo, analyzePe64ParityDemo, analyzePe64UnpackingDemo, analyzeArtifactDemo, analyzeSehDemo, analyzeThreadsDemo, analyzeInstructionsDemo, analyzeSystemDemo, analyzeNetworkDemo }: {
   dragging: boolean
   setDragging: (value: boolean) => void
   inputRef: React.RefObject<HTMLInputElement | null>
   inspectFile: (file: File) => Promise<void>
   analyzeDemo: () => Promise<void>
   analyzePe64Demo: () => Promise<void>
+  analyzeLinuxDemo: () => Promise<void>
   analyzeCodeDemo: () => Promise<void>
   analyzePe64ParityDemo: () => Promise<void>
   analyzePe64UnpackingDemo: () => Promise<void>
@@ -551,6 +576,7 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <span>Or try a safe demo</span>
         <button className="demo-chip" type="button" aria-label="Use safe PE demo" onClick={() => void analyzeDemo()}>Safe PE</button>
         <button className="demo-chip" type="button" aria-label="Use safe PE64 demo" onClick={() => void analyzePe64Demo()}>Safe PE64</button>
+        <button className="demo-chip" type="button" aria-label="Use safe Linux demo" onClick={() => void analyzeLinuxDemo()}>Safe Linux</button>
         <button className="demo-chip" type="button" aria-label="Use code analysis demo" onClick={() => void analyzeCodeDemo()}>Code analysis</button>
         <button className="demo-chip" type="button" aria-label="Use PE64 parity demo" onClick={() => void analyzePe64ParityDemo()}>PE64 parity</button>
         <button className="demo-chip" type="button" aria-label="Use PE64 unpacking demo" onClick={() => void analyzePe64UnpackingDemo()}>PE64 unpacking</button>
@@ -744,12 +770,14 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
 }) {
   const format = staticReport.format as Record<string, unknown>
   const architecture = staticReport.sample.architecture ?? ''
-  const eligible = format.kind === 'pe' && ((format.bitness === 32 && architecture.includes('X86')) || (format.bitness === 64 && architecture.includes('X86_64')))
+  const windowsEligible = format.kind === 'pe' && ((format.bitness === 32 && architecture.includes('X86')) || (format.bitness === 64 && architecture.includes('X86_64')))
+  const linuxEligible = format.kind === 'elf' && format.bitness === 64 && architecture.toUpperCase().includes('X86_64')
+  const eligible = windowsEligible || linuxEligible
   const [view, setView] = useState<'timeline' | 'behavior' | 'api' | 'instructions' | 'coverage' | 'artifacts' | 'unpacking' | 'exceptions' | 'threads' | 'system' | 'network' | 'provenance' | 'snapshots' | 'unwind' | 'profiles'>('timeline')
   const [timelineTarget, setTimelineTarget] = useState<number | null>(null)
 
   if (!eligible) {
-    return <EmptyState title="Dynamic analysis is not available for this file" text="The current emulator supports PE32/x86 and PE64/x86-64 executables. Static analysis remains available for every supported format." />
+    return <EmptyState title="Dynamic analysis is not available for this file" text="The current emulator supports PE32/x86, PE64/x86-64, and Linux ELF64/x86-64 executables. Static analysis remains available for every supported format." />
   }
   if (status === 'running') {
     return <div className="dynamic-start"><Spinner /><h2>{dynamicProgressLabels[stage]}</h2><p>Execution is isolated inside a dedicated worker with a 10-second watchdog.</p><button className="button secondary" type="button" onClick={onCancel}>Stop analysis</button></div>
@@ -761,10 +789,10 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
     return (
       <div className="dynamic-intro">
         <div>
-          <p className="kicker">PE32/x86 + PE64/x86-64 interpreter</p>
+          <p className="kicker">{linuxEligible ? 'Linux ELF64/x86-64 interpreter' : 'PE32/x86 + PE64/x86-64 interpreter'}</p>
           <h2>Observe modeled behavior</h2>
-          <p>Instructions run in a deterministic Rust interpreter. Windows APIs, files, registry keys, memory, and network operations are synthetic and never map to browser resources.</p>
-          <ProfilePicker value={profileId} onChange={onSelectProfile} />
+          <p>{linuxEligible ? 'Instructions run against a deterministic synthetic Linux userspace. Syscalls, files, processes, memory, and network operations never map to browser or host resources.' : 'Instructions run in a deterministic Rust interpreter. Windows APIs, files, registry keys, memory, and network operations are synthetic and never map to browser resources.'}</p>
+          <ProfilePicker profiles={linuxEligible ? LINUX_ENVIRONMENT_PROFILES : ENVIRONMENT_PROFILES} value={profileId} onChange={onSelectProfile} />
           <div className="button-row"><button className="button primary" type="button" onClick={onRun}>Run selected profile</button><button className="button secondary" type="button" onClick={onRunProfiles}>Compare all profiles</button></div>
         </div>
         <dl className="limits-list">
@@ -780,14 +808,14 @@ function DynamicView({ staticReport, report, reports, profileId, status, stage, 
   const behaviorCount = report.processes.length + report.filesystem.length + report.registry.length + report.network.length + report.memory.length + report.injection.length + report.persistence.length + report.exceptions.length
   return (
     <div className="dynamic-report">
-      <div className="profile-toolbar"><ProfilePicker value={profileId} onChange={onSelectProfile} /><button className="button secondary compact" type="button" onClick={onRunProfiles}>Run profile matrix</button><span>{report.profile.environment.windows_version} · {report.profile.environment.network_mode}</span></div>
+      <div className="profile-toolbar"><ProfilePicker profiles={linuxEligible ? LINUX_ENVIRONMENT_PROFILES : ENVIRONMENT_PROFILES} value={profileId} onChange={onSelectProfile} /><button className="button secondary compact" type="button" onClick={onRunProfiles}>Run profile matrix</button><span>{report.profile.operating_system} · {report.profile.environment.network_mode}</span></div>
       <div className="stats-grid four">
         <Stat label="Termination" value={terminationLabel(report.termination)} detail="Bounded execution" />
         <Stat label="Instructions" value={report.instruction_count.toLocaleString()} detail={`${report.coverage.unique_instruction_addresses.toLocaleString()} unique addresses`} />
         <Stat label="API calls" value={report.api_calls.length.toLocaleString()} detail={`${report.coverage.modeled_api_calls} modeled · ${report.coverage.unmodeled_api_calls} fallback`} />
         <Stat label="Elapsed" value={`${report.elapsed_ms.toFixed(2)} ms`} detail="Dedicated worker" />
       </div>
-      <div className="notice safe-notice"><strong>No guest operation left the browser.</strong><span>Network, filesystem, registry, time, process, and memory APIs were modeled locally.</span></div>
+      <div className="notice safe-notice"><strong>No guest operation left the browser.</strong><span>Network, filesystem, time, process, and memory operations were modeled locally.</span></div>
       <Section title="Dynamic findings" description="Signals derived from observed execution.">
         <div className="finding-list">
           {report.findings.map((finding) => <article className="finding" key={finding.id}><Severity value={finding.severity} /><div><h3>{finding.title}</h3><p>{finding.rationale}</p>{finding.evidence.length > 0 && <div className="evidence">{finding.evidence.map((value) => <code key={value}>{value}</code>)}</div>}</div></article>)}
@@ -836,7 +864,7 @@ function SnapshotView({ report }: { report: DynamicReport }) {
 }
 
 function UnwindView({ report }: { report: DynamicReport }) {
-  if (!report.unwind_functions.length) return <EmptyState title="No x64 unwind metadata" text="PE32 images do not use the PE64 runtime-function table, or this PE64 image did not provide one." />
+  if (!report.unwind_functions.length) return <EmptyState title="No PE64 unwind metadata" text={report.profile.operating_system.startsWith('Linux') ? 'Linux ELF64 does not use the PE64 runtime-function table.' : 'PE32 images do not use the PE64 runtime-function table, or this PE64 image did not provide one.'} />
   return <Section title="PE64 unwind metadata" description="Bounded RUNTIME_FUNCTION entries from the exception directory support x64 stack and exception analysis."><Table><thead><tr><th>#</th><th>Function begin</th><th>Function end</th><th>Unwind info</th></tr></thead><tbody>{report.unwind_functions.map((entry, index) => <tr key={`${entry.begin_address}-${index}`}><td>{index + 1}</td><td><code>{formatOffset(entry.begin_address)}</code></td><td><code>{formatOffset(entry.end_address)}</code></td><td><code>{formatOffset(entry.unwind_info_address)}</code></td></tr>)}</tbody></Table></Section>
 }
 
@@ -857,7 +885,8 @@ function NetworkView({ report }: { report: DynamicReport }) {
 
 function SystemView({ report }: { report: DynamicReport }) {
   if (!report.system.length) return <EmptyState title="No system-object activity" text="No synchronization, enumeration, token, mapping, pipe, resource, or crypto APIs were reached." />
-  return <Section title="Synthetic Windows system objects" description="Every object is bounded in worker memory and has no host counterpart."><Table><thead><tr><th>Category</th><th>Operation</th><th>Target</th><th>Detail</th><th>Result</th></tr></thead><tbody>{report.system.map((event, index) => <tr key={`${event.category}-${index}`}><td><span className="tag">{event.category}</span></td><td>{event.operation.replaceAll('_', ' ')}</td><td><code>{event.target}</code></td><td>{event.detail}</td><td><code>{formatOffset(event.result)}</code></td></tr>)}</tbody></Table></Section>
+  const linux = report.profile.operating_system.startsWith('Linux')
+  return <Section title={linux ? 'Synthetic Linux runtime objects' : 'Synthetic Windows system objects'} description="Every object is bounded in worker memory and has no host counterpart."><Table><thead><tr><th>Category</th><th>Operation</th><th>Target</th><th>Detail</th><th>Result</th></tr></thead><tbody>{report.system.map((event, index) => <tr key={`${event.category}-${index}`}><td><span className="tag">{event.category}</span></td><td>{event.operation.replaceAll('_', ' ')}</td><td><code>{event.target}</code></td><td>{event.detail}</td><td><code>{formatOffset(event.result)}</code></td></tr>)}</tbody></Table></Section>
 }
 
 function ThreadView({ report }: { report: DynamicReport }) {
@@ -876,8 +905,8 @@ function UnpackingView({ report, yara, status, onScan }: { report: DynamicReport
   return <div className="generation-layout"><div className="artifact-actions"><div><strong>{report.generation_stats.count} generations across {report.generation_stats.chains} chains</strong><span>{report.generation_stats.executed_generations} executed · {report.generation_stats.entry_point_candidates} entry candidates · {report.generation_stats.reconstructed_imports} reconstructed imports</span></div><button className="button primary compact" type="button" disabled={status === 'running'} onClick={onScan}>{status === 'running' ? 'Scanning generations…' : 'Scan generations with YARA'}</button></div><Section title="Payload lineage" description="Generated executable regions include bounded entry-point candidates and imports observed from calls originating inside that generation."><Table><thead><tr><th>Generation</th><th>Parent</th><th>Region</th><th>Candidate entry</th><th>Observed runtime imports</th><th>Trigger</th><th>Flags</th><th>SHA-256</th><th>YARA</th></tr></thead><tbody>{report.payload_generations.map((generation) => { const artifact = artifactById.get(generation.artifact_id); const result = yaraById.get(generation.artifact_id); return <tr key={generation.id}><td><code className="strong-code">#{generation.sequence + 1}</code></td><td>{generation.parent_id ? <code>{generation.parent_id.split('-').slice(0, 2).join('-')}</code> : 'Root'}</td><td><code>{formatOffset(generation.region_base)}</code><small>{formatBytes(generation.size)} · {generation.permissions}</small></td><td>{generation.entry_point_candidate == null ? '—' : <><code>{formatOffset(generation.entry_point_candidate)}</code><small>instruction {generation.first_execution_instruction?.toLocaleString()}</small></>}</td><td>{generation.reconstructed_imports.length ? generation.reconstructed_imports.map((item) => <code key={item}>{item}</code>) : '—'}</td><td>{generation.trigger}<small>instruction {generation.capture_instruction.toLocaleString()}</small></td><td><div className="generation-flags">{generation.executed && <span className="tag danger">executed</span>}{generation.executable_heap && <span className="tag">heap</span>}{generation.entry_point_overwrite && <span className="tag danger">entry overwrite</span>}</div></td><td><code>{artifact?.sha256.slice(0, 16) ?? generation.artifact_id.slice(0, 16)}…</code></td><td>{result?.error ? 'Error' : result ? result.report?.matches.map((match) => match.identifier).join(', ') || 'No match' : 'Not scanned'}</td></tr> })}</tbody></Table></Section></div>
 }
 
-function ProfilePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return <label className="profile-picker"><span>Environment profile</span><select aria-label="Environment profile" value={value} onChange={(event) => onChange(event.target.value)}>{ENVIRONMENT_PROFILES.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</select></label>
+function ProfilePicker({ profiles, value, onChange }: { profiles: DynamicEnvironmentProfile[]; value: string; onChange: (value: string) => void }) {
+  return <label className="profile-picker"><span>Environment profile</span><select aria-label="Environment profile" value={value} onChange={(event) => onChange(event.target.value)}>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</select></label>
 }
 
 function ProfileComparison({ reports, onSelect }: { reports: DynamicReport[]; onSelect: (profileId: string) => void }) {
@@ -887,7 +916,7 @@ function ProfileComparison({ reports, onSelect }: { reports: DynamicReport[]; on
   const candidate = reports.find((report) => report.profile.environment.id === candidateId) ?? reports[1] ?? baseline
   const comparison = compareDynamicRuns(baseline, candidate)
   const exportComparison = () => { const url = URL.createObjectURL(new Blob([JSON.stringify(comparison, null, 2)], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${baseline.profile.environment.id}-vs-${candidate.profile.environment.id}.nope-run-diff.json`; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 0) }
-  return <div className="generation-layout"><Section title="Environment profile comparison" description="The same sample was executed independently under deterministic synthetic environments."><Table><thead><tr><th>Profile</th><th>Environment</th><th>Termination</th><th>Instructions</th><th>Behavior</th><th>Artifacts</th><th>First snapshot delta</th></tr></thead><tbody>{reports.map((report) => { const delta = compareDynamicRuns(reports[0], report); return <tr key={report.profile.environment.id}><td><button className="offset-link" type="button" onClick={() => onSelect(report.profile.environment.id)}>{report.profile.environment.label}</button></td><td><small>{report.profile.environment.windows_version}<br />{report.profile.environment.cpu_count} CPU · {formatBytes(report.profile.environment.memory_mb * 1024 * 1024)} · {report.profile.environment.network_mode}{report.profile.environment.debugger_present ? ' · debugger' : ''}</small></td><td>{terminationLabel(report.termination)}</td><td>{report.instruction_count.toLocaleString()}</td><td>{dynamicBehaviorCount(report)}</td><td>{report.artifacts.length}</td><td><span className={`tag ${delta.different ? 'danger' : ''}`}>{report === reports[0] ? 'Baseline' : delta.first_divergence?.trigger ?? (delta.different ? 'Report delta' : 'Same path')}</span></td></tr> })}</tbody></Table></Section><Section title="Detailed run diff" description="Compare any two deterministic runs and export a metadata-only diff."><div className="artifact-actions"><div className="button-row"><label className="profile-picker"><span>Baseline</span><select aria-label="Comparison baseline" value={baselineId} onChange={(event) => setBaselineId(event.target.value)}>{reports.map((report) => <option key={report.profile.environment.id} value={report.profile.environment.id}>{report.profile.environment.label}</option>)}</select></label><label className="profile-picker"><span>Candidate</span><select aria-label="Comparison candidate" value={candidateId} onChange={(event) => setCandidateId(event.target.value)}>{reports.map((report) => <option key={report.profile.environment.id} value={report.profile.environment.id}>{report.profile.environment.label}</option>)}</select></label></div><button className="button secondary compact" type="button" onClick={exportComparison}>Export run diff JSON</button></div><div className="stats-grid"><Stat label="First divergence" value={comparison.first_divergence?.trigger ?? 'None'} detail={comparison.first_divergence ? `snapshot ${comparison.first_divergence.sequence + 1}` : 'State hashes match'} /><Stat label="Instruction delta" value={comparison.deltas.instructions.toLocaleString()} detail={`${candidate.instruction_count.toLocaleString()} candidate`} /><Stat label="Behavior delta" value={comparison.deltas.behavior.toLocaleString()} detail={`${comparison.deltas.provenance_flows} provenance flows`} /></div><Table><thead><tr><th>Set</th><th>Added</th><th>Removed</th></tr></thead><tbody><tr><td>APIs</td><td><code>{comparison.api_changes.added.join(', ') || 'None'}</code></td><td><code>{comparison.api_changes.removed.join(', ') || 'None'}</code></td></tr><tr><td>Findings</td><td><code>{comparison.finding_changes.added.join(', ') || 'None'}</code></td><td><code>{comparison.finding_changes.removed.join(', ') || 'None'}</code></td></tr></tbody></Table></Section></div>
+  return <div className="generation-layout"><Section title="Environment profile comparison" description="The same sample was executed independently under deterministic synthetic environments."><Table><thead><tr><th>Profile</th><th>Environment</th><th>Termination</th><th>Instructions</th><th>Behavior</th><th>Artifacts</th><th>First snapshot delta</th></tr></thead><tbody>{reports.map((report) => { const delta = compareDynamicRuns(reports[0], report); return <tr key={report.profile.environment.id}><td><button className="offset-link" type="button" onClick={() => onSelect(report.profile.environment.id)}>{report.profile.environment.label}</button></td><td><small>{report.profile.operating_system}<br />{report.profile.environment.cpu_count} CPU · {formatBytes(report.profile.environment.memory_mb * 1024 * 1024)} · {report.profile.environment.network_mode}{report.profile.environment.debugger_present ? ' · debugger' : ''}</small></td><td>{terminationLabel(report.termination)}</td><td>{report.instruction_count.toLocaleString()}</td><td>{dynamicBehaviorCount(report)}</td><td>{report.artifacts.length}</td><td><span className={`tag ${delta.different ? 'danger' : ''}`}>{report === reports[0] ? 'Baseline' : delta.first_divergence?.trigger ?? (delta.different ? 'Report delta' : 'Same path')}</span></td></tr> })}</tbody></Table></Section><Section title="Detailed run diff" description="Compare any two deterministic runs and export a metadata-only diff."><div className="artifact-actions"><div className="button-row"><label className="profile-picker"><span>Baseline</span><select aria-label="Comparison baseline" value={baselineId} onChange={(event) => setBaselineId(event.target.value)}>{reports.map((report) => <option key={report.profile.environment.id} value={report.profile.environment.id}>{report.profile.environment.label}</option>)}</select></label><label className="profile-picker"><span>Candidate</span><select aria-label="Comparison candidate" value={candidateId} onChange={(event) => setCandidateId(event.target.value)}>{reports.map((report) => <option key={report.profile.environment.id} value={report.profile.environment.id}>{report.profile.environment.label}</option>)}</select></label></div><button className="button secondary compact" type="button" onClick={exportComparison}>Export run diff JSON</button></div><div className="stats-grid"><Stat label="First divergence" value={comparison.first_divergence?.trigger ?? 'None'} detail={comparison.first_divergence ? `snapshot ${comparison.first_divergence.sequence + 1}` : 'State hashes match'} /><Stat label="Instruction delta" value={comparison.deltas.instructions.toLocaleString()} detail={`${candidate.instruction_count.toLocaleString()} candidate`} /><Stat label="Behavior delta" value={comparison.deltas.behavior.toLocaleString()} detail={`${comparison.deltas.provenance_flows} provenance flows`} /></div><Table><thead><tr><th>Set</th><th>Added</th><th>Removed</th></tr></thead><tbody><tr><td>APIs</td><td><code>{comparison.api_changes.added.join(', ') || 'None'}</code></td><td><code>{comparison.api_changes.removed.join(', ') || 'None'}</code></td></tr><tr><td>Findings</td><td><code>{comparison.finding_changes.added.join(', ') || 'None'}</code></td><td><code>{comparison.finding_changes.removed.join(', ') || 'None'}</code></td></tr></tbody></Table></Section></div>
 }
 
 function dynamicBehaviorCount(report: DynamicReport) {

@@ -19,3 +19,8 @@ process/network strings. It remains valid under the bounded dynamic interpreter.
 heap memory, changes only guest permissions, resolves emulator-owned exports through
 both Win32 and `Ldr*` paths, executes a tiny safe stage, and exits. It exists to test
 generated entry-point candidates and observed runtime-import reconstruction.
+
+`nope-safe-dynamic-linux-x64` is a deterministic, harmless ELF64/x86-64
+executable. It exercises the synthetic Linux process stack, direct syscalls,
+virtual file capture, mmap/mprotect, scripted TCP I/O, denied execve behavior,
+and clean exit without accessing host resources.

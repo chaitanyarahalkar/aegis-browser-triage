@@ -88,6 +88,162 @@ pub fn safe_dynamic_pe32() -> Vec<u8> {
     bytes
 }
 
+/// Deterministic, harmless ELF64 fixture that exercises Linux syscall handling,
+/// the virtual filesystem, memory protection, the synthetic socket sink, and a
+/// denied process-execution request before exiting cleanly.
+pub fn safe_dynamic_elf64() -> Vec<u8> {
+    const CODE_VA: u64 = 0x0040_0200;
+    const DATA_VA: u64 = 0x0040_1000;
+    const STDOUT: u64 = DATA_VA;
+    const PATH: u64 = DATA_VA + 0x40;
+    const FILE_DATA: u64 = DATA_VA + 0x80;
+    const SOCKADDR: u64 = DATA_VA + 0x100;
+    const NETWORK_DATA: u64 = DATA_VA + 0x120;
+    const RECEIVE_BUFFER: u64 = DATA_VA + 0x180;
+    const SHELL: u64 = DATA_VA + 0x200;
+    const STDOUT_BYTES: &[u8] = b"NOPE Linux dynamic demo\n";
+    const FILE_BYTES: &[u8] = b"NOPE_SAFE_LINUX_ARTIFACT http://artifact.example.test/payload\n";
+    const NETWORK_BYTES: &[u8] = b"GET /start HTTP/1.0\r\n\r\n";
+
+    let mut bytes = vec![0u8; 0x2000];
+    bytes[..16].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    put_u16(&mut bytes, 16, 2); // ET_EXEC
+    put_u16(&mut bytes, 18, 62); // EM_X86_64
+    put_u32(&mut bytes, 20, 1);
+    put_u64(&mut bytes, 24, CODE_VA);
+    put_u64(&mut bytes, 32, 64);
+    put_u16(&mut bytes, 52, 64);
+    put_u16(&mut bytes, 54, 56);
+    put_u16(&mut bytes, 56, 2);
+
+    // RX image/header segment.
+    put_u32(&mut bytes, 64, 1);
+    put_u32(&mut bytes, 68, 5);
+    put_u64(&mut bytes, 72, 0);
+    put_u64(&mut bytes, 80, 0x0040_0000);
+    put_u64(&mut bytes, 88, 0x0040_0000);
+    put_u64(&mut bytes, 96, 0x1000);
+    put_u64(&mut bytes, 104, 0x1000);
+    put_u64(&mut bytes, 112, 0x1000);
+    // RW data/BSS segment.
+    put_u32(&mut bytes, 120, 1);
+    put_u32(&mut bytes, 124, 6);
+    put_u64(&mut bytes, 128, 0x1000);
+    put_u64(&mut bytes, 136, DATA_VA);
+    put_u64(&mut bytes, 144, DATA_VA);
+    put_u64(&mut bytes, 152, 0x1000);
+    put_u64(&mut bytes, 160, 0x2000);
+    put_u64(&mut bytes, 168, 0x1000);
+
+    let mut code = Vec::new();
+    let mov_eax = |code: &mut Vec<u8>, value: u32| {
+        code.push(0xb8);
+        code.extend_from_slice(&value.to_le_bytes());
+    };
+    let mov_edi = |code: &mut Vec<u8>, value: u32| {
+        code.push(0xbf);
+        code.extend_from_slice(&value.to_le_bytes());
+    };
+    let mov_esi = |code: &mut Vec<u8>, value: u32| {
+        code.push(0xbe);
+        code.extend_from_slice(&value.to_le_bytes());
+    };
+    let mov_edx = |code: &mut Vec<u8>, value: u32| {
+        code.push(0xba);
+        code.extend_from_slice(&value.to_le_bytes());
+    };
+    let mov_rsi = |code: &mut Vec<u8>, value: u64| {
+        code.extend_from_slice(&[0x48, 0xbe]);
+        code.extend_from_slice(&value.to_le_bytes());
+    };
+    let syscall = |code: &mut Vec<u8>| code.extend_from_slice(&[0x0f, 0x05]);
+
+    // write(1, stdout, len)
+    mov_eax(&mut code, 1);
+    mov_edi(&mut code, 1);
+    mov_rsi(&mut code, STDOUT);
+    mov_edx(&mut code, STDOUT_BYTES.len() as u32);
+    syscall(&mut code);
+    // openat(AT_FDCWD, path, O_WRONLY|O_CREAT|O_TRUNC, 0644)
+    mov_eax(&mut code, 257);
+    mov_edi(&mut code, (-100i32) as u32);
+    mov_rsi(&mut code, PATH);
+    mov_edx(&mut code, 0o1101);
+    code.extend_from_slice(&[0x41, 0xba]);
+    code.extend_from_slice(&0o644u32.to_le_bytes());
+    syscall(&mut code);
+    code.extend_from_slice(&[0x89, 0xc7]); // mov edi,eax
+    // write(fd, file bytes, len), close(fd)
+    mov_eax(&mut code, 1);
+    mov_rsi(&mut code, FILE_DATA);
+    mov_edx(&mut code, FILE_BYTES.len() as u32);
+    syscall(&mut code);
+    mov_eax(&mut code, 3);
+    syscall(&mut code);
+    // mmap + mprotect RX
+    mov_eax(&mut code, 9);
+    code.extend_from_slice(&[0x31, 0xff]);
+    mov_esi(&mut code, 0x1000);
+    mov_edx(&mut code, 3);
+    code.extend_from_slice(&[0x41, 0xba, 0x22, 0, 0, 0]);
+    code.extend_from_slice(&[0x49, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff]);
+    code.extend_from_slice(&[0x45, 0x31, 0xc9]);
+    syscall(&mut code);
+    code.extend_from_slice(&[0x49, 0x89, 0xc4]); // mov r12,rax
+    mov_eax(&mut code, 10);
+    code.extend_from_slice(&[0x4c, 0x89, 0xe7]); // mov rdi,r12
+    mov_esi(&mut code, 0x1000);
+    mov_edx(&mut code, 5);
+    syscall(&mut code);
+    // socket/connect to the scripted 10.20.30.40:8080 sink.
+    mov_eax(&mut code, 41);
+    mov_edi(&mut code, 2);
+    mov_esi(&mut code, 1);
+    code.extend_from_slice(&[0x31, 0xd2]);
+    syscall(&mut code);
+    code.extend_from_slice(&[0x89, 0xc3]); // mov ebx,eax
+    mov_eax(&mut code, 42);
+    code.extend_from_slice(&[0x89, 0xdf]); // mov edi,ebx
+    mov_rsi(&mut code, SOCKADDR);
+    mov_edx(&mut code, 16);
+    syscall(&mut code);
+    // sendto + recvfrom
+    mov_eax(&mut code, 44);
+    code.extend_from_slice(&[0x89, 0xdf]);
+    mov_rsi(&mut code, NETWORK_DATA);
+    mov_edx(&mut code, NETWORK_BYTES.len() as u32);
+    code.extend_from_slice(&[0x45, 0x31, 0xd2, 0x45, 0x31, 0xc0, 0x45, 0x31, 0xc9]);
+    syscall(&mut code);
+    mov_eax(&mut code, 45);
+    code.extend_from_slice(&[0x89, 0xdf]);
+    mov_rsi(&mut code, RECEIVE_BUFFER);
+    mov_edx(&mut code, 64);
+    code.extend_from_slice(&[0x45, 0x31, 0xd2, 0x45, 0x31, 0xc0, 0x45, 0x31, 0xc9]);
+    syscall(&mut code);
+    mov_eax(&mut code, 3);
+    code.extend_from_slice(&[0x89, 0xdf]);
+    syscall(&mut code);
+    // Denied execve("/bin/sh", NULL, NULL), then exit_group(0).
+    mov_eax(&mut code, 59);
+    code.extend_from_slice(&[0x48, 0xbf]);
+    code.extend_from_slice(&SHELL.to_le_bytes());
+    code.extend_from_slice(&[0x31, 0xf6, 0x31, 0xd2]);
+    syscall(&mut code);
+    mov_eax(&mut code, 231);
+    code.extend_from_slice(&[0x31, 0xff]);
+    syscall(&mut code);
+
+    bytes[0x200..0x200 + code.len()].copy_from_slice(&code);
+    bytes[0x1000..0x1000 + STDOUT_BYTES.len()].copy_from_slice(STDOUT_BYTES);
+    write_c_string(&mut bytes, 0x1040, b"/tmp/nope-linux-artifact.bin");
+    bytes[0x1080..0x1080 + FILE_BYTES.len()].copy_from_slice(FILE_BYTES);
+    bytes[0x1100..0x1110]
+        .copy_from_slice(&[2, 0, 0x1f, 0x90, 10, 20, 30, 40, 0, 0, 0, 0, 0, 0, 0, 0]);
+    bytes[0x1120..0x1120 + NETWORK_BYTES.len()].copy_from_slice(NETWORK_BYTES);
+    write_c_string(&mut bytes, 0x1200, b"/bin/sh");
+    bytes
+}
+
 pub fn safe_dynamic_pe64() -> Vec<u8> {
     let mut bytes = vec![0u8; 0x800];
     bytes[0..2].copy_from_slice(b"MZ");

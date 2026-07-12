@@ -68,3 +68,14 @@ rule NOPE_Safe_Network_Download : demo safe network {
   condition:
     $marker
 }
+
+rule NOPE_Safe_Linux_Artifact : demo safe linux runtime {
+  meta:
+    description = "Identifies the first-party inert Linux runtime artifact fixture"
+    severity = "info"
+    author = "NOPE"
+  strings:
+    $marker = "NOPE_SAFE_LINUX_ARTIFACT" ascii
+  condition:
+    $marker
+}
