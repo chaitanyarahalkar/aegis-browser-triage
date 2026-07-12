@@ -37,12 +37,16 @@ async function runYara(page: import('@playwright/test').Page) {
 test('runs the safe PE through static and dynamic Rust workers', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Look before you launch.' })).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Analysis capabilities' })).toBeVisible()
   await expect(page.getByText('No uploads', { exact: true })).toBeVisible()
   await expect(page.getByLabel('Safe demo')).toHaveValue('')
   await selectDemo(page, 'safe-pe')
 
   await expect(page.getByText('aegis-safe-dynamic-pe32.exe')).toBeVisible()
   await expect(page.locator('.sample-title')).toContainText('PE · 32-bit X86')
+  await expect(page.getByText('Static analysis complete', { exact: true })).toBeVisible()
+  await expect(page.locator('.analysis-nav')).toContainText('Static analysis')
+  await expect(page.locator('.pane-header')).toContainText('Overview')
   await expect(page.getByRole('heading', { name: 'Findings' })).toBeVisible()
 
   await runDynamic(page)
@@ -347,7 +351,7 @@ test('compiles starter YARA rules, links matches to hex, and exports the combine
   await runYara(page)
   await expect(page.getByText('Identifies the first-party NOPE safe test fixture', { exact: true })).toBeVisible()
   await page.locator('.offset-link').first().click()
-  await expect(page.getByRole('heading', { name: 'Hex view' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Hex view', exact: true })).toBeVisible()
   const downloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Export report' }).click()
   const download = await downloadPromise
@@ -541,4 +545,6 @@ test('keeps the complete mobile workflow usable', async ({ page, isMobile }) => 
   await expect(page.getByLabel('Filter extracted values')).toBeVisible()
   await runDynamic(page)
   await expect(page.getByText('Process execution requested')).toBeVisible()
+  const geometry = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }))
+  expect(geometry.scrollWidth).toBe(geometry.width)
 })

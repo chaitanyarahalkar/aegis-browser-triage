@@ -437,13 +437,23 @@ export default function App() {
         </a>
       </header>
 
-      <main id="top" className="page">
+      <main id="top" className={`page ${report ? 'page-workbench' : ''}`}>
         {!report && !busy && (
           <section className="intro">
-            <div className="intro-copy">
-              <p className="kicker">Browser-native binary workbench</p>
-              <h1>Look before<br />you launch.</h1>
-              <p>Disassemble, emulate, and interrogate suspicious binaries—entirely in your browser. Your files stay local and never execute on the host.</p>
+            <div className="intro-layout">
+              <div className="intro-copy">
+                <p className="kicker">Binary analysis workbench</p>
+                <h1>Look before<br />you launch.</h1>
+                <p>Static inspection, bounded behavior emulation, and YARA triage in one local analyst workspace.</p>
+              </div>
+              <aside className="capability-brief" aria-label="Analysis capabilities">
+                <span>Analysis surface</span>
+                <dl>
+                  <div><dt>Static</dt><dd>PE · ELF · Mach-O · Wasm</dd></div>
+                  <div><dt>Behavior</dt><dd>Windows x86/x64 · Linux x64</dd></div>
+                  <div><dt>Detection</dt><dd>YARA-X · artifacts · provenance</dd></div>
+                </dl>
+              </aside>
             </div>
             <UploadPanel
               dragging={dragging}
@@ -669,66 +679,80 @@ function Workspace({ report, dynamicReport, dynamicReports, dynamicProfileId, dy
   onCodeOffset: (offset: number) => void
   hexTarget: number | null
 }) {
-  const tabs: Array<{ id: Tab; label: string; count?: number }> = [
-    { id: 'summary', label: 'Summary', count: report.findings.length },
-    { id: 'structure', label: 'Structure', count: report.sections.length },
-    { id: 'symbols', label: 'Symbols', count: report.imports.length + report.exports.length },
-    { id: 'code', label: 'Code', count: report.code.functions.length },
-    { id: 'strings', label: 'Strings', count: report.strings.length },
-    { id: 'hex', label: 'Hex' },
-    { id: 'dynamic', label: 'Dynamic', count: dynamicReport?.api_calls.length },
-    { id: 'yara', label: 'YARA', count: yaraReport?.matches.length },
+  const tabs: Array<{ id: Tab; label: string; group: string; description: string; count?: number }> = [
+    { id: 'summary', label: 'Overview', group: 'Triage', description: 'Identity, risk signals, hashes, and executable metadata.', count: report.findings.length },
+    { id: 'structure', label: 'Structure', group: 'Static analysis', description: 'Sections, address ranges, permissions, sizes, and entropy.', count: report.sections.length },
+    { id: 'symbols', label: 'Symbols', group: 'Static analysis', description: 'Imported and exported functions grouped by module.', count: report.imports.length + report.exports.length },
+    { id: 'code', label: 'Code analysis', group: 'Static analysis', description: 'Capabilities, bounded disassembly, and control-flow evidence.', count: report.code.functions.length },
+    { id: 'strings', label: 'Strings & IOCs', group: 'Static analysis', description: 'Extracted text and non-clickable indicators.', count: report.strings.length },
+    { id: 'hex', label: 'Hex viewer', group: 'Static analysis', description: 'Paged raw bytes retained inside the static worker.' },
+    { id: 'dynamic', label: 'Behavior', group: 'Runtime analysis', description: 'Bounded execution, system activity, artifacts, and provenance.', count: dynamicReport?.api_calls.length },
+    { id: 'yara', label: 'YARA rules', group: 'Runtime analysis', description: 'Compile local rules and scan the sample or captured artifacts.', count: yaraReport?.matches.length },
   ]
+  const active = tabs.find((tab) => tab.id === activeTab) ?? tabs[0]
+  const groups = Array.from(new Set(tabs.map((tab) => tab.group)))
   return (
     <section className="workspace" aria-label="Analysis report">
       <header className="sample-header">
         <div className="sample-mark">{formatLabel(report.sample.detected_format).slice(0, 2)}</div>
         <div className="sample-title">
           <strong>{report.sample.name}</strong>
-          <span>{formatLabel(report.sample.detected_format)} · {report.sample.architecture ?? 'Unknown architecture'} · {formatBytes(report.sample.size)}</span>
+          <span>{formatLabel(report.sample.detected_format)} · {report.sample.architecture ?? 'Unknown architecture'} · {formatBytes(report.sample.size)} · SHA-256 {report.sample.sha256.slice(0, 12)}…</span>
         </div>
+        <span className="sample-status"><i />{dynamicReport ? 'Behavior captured' : 'Static analysis complete'}</span>
         <div className="sample-actions">
           <button className="button secondary compact" type="button" onClick={onExport}>Export report</button>
           <button className="button secondary compact" type="button" onClick={onClose}>Close</button>
         </div>
       </header>
 
-      <nav className="tabs" role="tablist" aria-label="Report sections">
-        {tabs.map((tab) => (
-          <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => onTabChange(tab.id)}>
-            {tab.label}{tab.count != null && <span>{tab.count}</span>}
-          </button>
-        ))}
-      </nav>
+      <div className="workbench-body">
+        <nav className="analysis-nav" role="tablist" aria-label="Report sections">
+          {groups.map((group) => <div className="analysis-nav-group" key={group}>
+            <span>{group}</span>
+            {tabs.filter((tab) => tab.group === group).map((tab) => (
+              <button key={tab.id} type="button" role="tab" aria-label={tab.id === 'summary' ? 'Summary' : tab.id === 'dynamic' ? 'Dynamic' : tab.label} aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => onTabChange(tab.id)}>
+                <span>{tab.label}</span>{tab.count != null && <small>{tab.count}</small>}
+              </button>
+            ))}
+          </div>)}
+        </nav>
 
-      <div className="workspace-content" role="tabpanel">
-        {activeTab === 'summary' && <SummaryView report={report} />}
-        {activeTab === 'structure' && <StructureView report={report} />}
-        {activeTab === 'symbols' && <SymbolsView report={report} />}
-        {activeTab === 'code' && <CodeView report={report} onOffset={onCodeOffset} />}
-        {activeTab === 'strings' && <StringsView report={report} />}
-        {activeTab === 'hex' && <HexView client={staticClient} sampleSize={report.sample.size} target={hexTarget} />}
-        {activeTab === 'dynamic' && (
-          <DynamicView
-            staticReport={report}
-            report={dynamicReport}
-            reports={dynamicReports}
-            profileId={dynamicProfileId}
-            status={dynamicStatus}
-            stage={dynamicStage}
-            error={dynamicError}
-            onRun={onRunDynamic}
-            onRunProfiles={onRunDynamicProfiles}
-            onSelectProfile={onSelectDynamicProfile}
-            onCancel={onCancelDynamic}
-            client={dynamicClient}
-            artifactYara={artifactYara}
-            artifactYaraStatus={artifactYaraStatus}
-            artifactYaraError={artifactYaraError}
-            onScanArtifacts={onScanArtifacts}
-          />
-        )}
-        {activeTab === 'yara' && <YaraView source={yaraSource} sourceName={yaraSourceName} status={yaraStatus} stage={yaraStage} summary={yaraSummary} report={yaraReport} error={yaraError} onSource={onYaraSource} onRun={onRunYara} onOffset={onYaraOffset} />}
+        <div className="analysis-pane">
+          <header className="pane-header">
+            <div><span>{active.group}</span><h1>{active.label}</h1></div>
+            <p>{active.description}</p>
+          </header>
+          <div className="workspace-content" role="tabpanel" aria-label={active.label}>
+            {activeTab === 'summary' && <SummaryView report={report} />}
+            {activeTab === 'structure' && <StructureView report={report} />}
+            {activeTab === 'symbols' && <SymbolsView report={report} />}
+            {activeTab === 'code' && <CodeView report={report} onOffset={onCodeOffset} />}
+            {activeTab === 'strings' && <StringsView report={report} />}
+            {activeTab === 'hex' && <HexView client={staticClient} sampleSize={report.sample.size} target={hexTarget} />}
+            {activeTab === 'dynamic' && (
+              <DynamicView
+                staticReport={report}
+                report={dynamicReport}
+                reports={dynamicReports}
+                profileId={dynamicProfileId}
+                status={dynamicStatus}
+                stage={dynamicStage}
+                error={dynamicError}
+                onRun={onRunDynamic}
+                onRunProfiles={onRunDynamicProfiles}
+                onSelectProfile={onSelectDynamicProfile}
+                onCancel={onCancelDynamic}
+                client={dynamicClient}
+                artifactYara={artifactYara}
+                artifactYaraStatus={artifactYaraStatus}
+                artifactYaraError={artifactYaraError}
+                onScanArtifacts={onScanArtifacts}
+              />
+            )}
+            {activeTab === 'yara' && <YaraView source={yaraSource} sourceName={yaraSourceName} status={yaraStatus} stage={yaraStage} summary={yaraSummary} report={yaraReport} error={yaraError} onSource={onYaraSource} onRun={onRunYara} onOffset={onYaraOffset} />}
+          </div>
+        </div>
       </div>
     </section>
   )
@@ -740,10 +764,11 @@ function SummaryView({ report }: { report: AnalysisReport }) {
   return (
     <div className="two-column">
       <div className="main-column">
-        <div className="stats-grid">
+        <div className="stats-grid four">
           <Stat label="Format" value={formatLabel(report.sample.detected_format)} detail={`Schema v${report.schema_version}`} />
-          <Stat label="Signals" value={String(report.findings.length - counts.info)} detail={`${counts.high} high, ${counts.medium} medium`} />
-          <Stat label="Analysis" value={`${report.stats.elapsed_ms.toFixed(report.stats.elapsed_ms < 10 ? 2 : 1)} ms`} detail={`${formatBytes(report.stats.bytes_scanned)} scanned`} />
+          <Stat label="Architecture" value={report.sample.architecture ?? 'Unknown'} detail={`${formatBytes(report.sample.size)} sample`} />
+          <Stat label="Risk signals" value={String(report.findings.length - counts.info)} detail={`${counts.high} high · ${counts.medium} medium`} />
+          <Stat label="Static runtime" value={`${report.stats.elapsed_ms.toFixed(report.stats.elapsed_ms < 10 ? 2 : 1)} ms`} detail={`${formatBytes(report.stats.bytes_scanned)} scanned`} />
         </div>
         {report.warnings.length > 0 && <div className="notice warning-notice">{report.warnings.map((warning, index) => <span key={`${warning.code}-${index}`}>{warning.message}</span>)}</div>}
         <Section title="Findings" description="Explainable static signals ordered by severity.">
