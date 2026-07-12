@@ -40,9 +40,6 @@ code { font-family: var(--mono); }
 .brand-mark .logo-slash { fill: none; stroke: var(--accent); stroke-width: 3.4; stroke-linecap: round; }
 .wordmark strong { font-size: 14px; font-weight: 600; letter-spacing: .01em; }
 .wordmark strong span { color: var(--muted); font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0; }
-.header-meta { display: flex; align-items: center; gap: 18px; color: var(--muted); font-size: 12px; }
-.quiet-status { display: flex; align-items: center; gap: 7px; }
-.quiet-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
 
 .page { width: min(1200px, calc(100% - 48px)); margin: 0 auto; flex: 1; padding: clamp(56px, 8vw, 104px) 0 88px; }
 
@@ -318,7 +315,6 @@ td code, .strong-code { color: var(--text); font: 10px/1.4 var(--mono); }
 
 @media (max-width: 680px) {
   .app-header { padding: 0 16px; }
-  .header-meta > span:last-child { display: none; }
   .page { width: calc(100% - 32px); padding-top: 42px; }
   .intro h1 { font-size: clamp(36px, 11vw, 52px); }
   .intro-copy > p:last-child { font-size: 15px; }

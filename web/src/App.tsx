@@ -435,10 +435,6 @@ export default function App() {
           <LogoMark className="brand-mark" />
           <strong>NOPE<span>.exe</span></strong>
         </a>
-        <div className="header-meta">
-          <span className="quiet-status"><i /> Local only</span>
-          <span>Nothing leaves this tab</span>
-        </div>
       </header>
 
       <main id="top" className="page">
