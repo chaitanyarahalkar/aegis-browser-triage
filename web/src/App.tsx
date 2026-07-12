@@ -524,7 +524,6 @@ export default function App() {
 
       <footer className="app-footer">
         <span>NOPE.exe 0.3</span>
-        <span>Static and emulated behavior are evidence, not a verdict.</span>
       </footer>
     </div>
   )
@@ -548,6 +547,20 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
   analyzeSystemDemo: () => Promise<void>
   analyzeNetworkDemo: () => Promise<void>
 }) {
+  const demos: Record<string, () => Promise<void>> = {
+    'safe-pe': analyzeDemo,
+    'safe-pe64': analyzePe64Demo,
+    'safe-linux': analyzeLinuxDemo,
+    'code-analysis': analyzeCodeDemo,
+    'pe64-parity': analyzePe64ParityDemo,
+    'pe64-unpacking': analyzePe64UnpackingDemo,
+    'runtime-artifact': analyzeArtifactDemo,
+    seh: analyzeSehDemo,
+    threads: analyzeThreadsDemo,
+    instructions: analyzeInstructionsDemo,
+    'system-objects': analyzeSystemDemo,
+    network: analyzeNetworkDemo,
+  }
   return (
     <div
       className={`upload-panel ${dragging ? 'dragging' : ''}`}
@@ -569,19 +582,31 @@ function UploadPanel({ dragging, setDragging, inputRef, inspectFile, analyzeDemo
         <button className="button primary" type="button" onClick={() => inputRef.current?.click()}>Choose file</button>
       </div>
       <div className="demo-list">
-        <span>Or try a safe demo</span>
-        <button className="demo-chip" type="button" aria-label="Use safe PE demo" onClick={() => void analyzeDemo()}>Safe PE</button>
-        <button className="demo-chip" type="button" aria-label="Use safe PE64 demo" onClick={() => void analyzePe64Demo()}>Safe PE64</button>
-        <button className="demo-chip" type="button" aria-label="Use safe Linux demo" onClick={() => void analyzeLinuxDemo()}>Safe Linux</button>
-        <button className="demo-chip" type="button" aria-label="Use code analysis demo" onClick={() => void analyzeCodeDemo()}>Code analysis</button>
-        <button className="demo-chip" type="button" aria-label="Use PE64 parity demo" onClick={() => void analyzePe64ParityDemo()}>PE64 parity</button>
-        <button className="demo-chip" type="button" aria-label="Use PE64 unpacking demo" onClick={() => void analyzePe64UnpackingDemo()}>PE64 unpacking</button>
-        <button className="demo-chip" type="button" aria-label="Use runtime artifact demo" onClick={() => void analyzeArtifactDemo()}>Runtime artifact</button>
-        <button className="demo-chip" type="button" aria-label="Use SEH demo" onClick={() => void analyzeSehDemo()}>SEH</button>
-        <button className="demo-chip" type="button" aria-label="Use threads demo" onClick={() => void analyzeThreadsDemo()}>Threads</button>
-        <button className="demo-chip" type="button" aria-label="Use instruction demo" onClick={() => void analyzeInstructionsDemo()}>Instruction</button>
-        <button className="demo-chip" type="button" aria-label="Use system-object demo" onClick={() => void analyzeSystemDemo()}>System-object</button>
-        <button className="demo-chip" type="button" aria-label="Use network demo" onClick={() => void analyzeNetworkDemo()}>Network</button>
+        <label htmlFor="safe-demo">Try a safe demo</label>
+        <select
+          id="safe-demo"
+          aria-label="Safe demo"
+          defaultValue=""
+          onChange={(event) => {
+            const action = demos[event.currentTarget.value]
+            event.currentTarget.value = ''
+            if (action) void action()
+          }}
+        >
+          <option value="" disabled>Select a demo…</option>
+          <option value="safe-pe">Safe PE</option>
+          <option value="safe-pe64">Safe PE64</option>
+          <option value="safe-linux">Safe Linux</option>
+          <option value="code-analysis">Code analysis</option>
+          <option value="pe64-parity">PE64 parity</option>
+          <option value="pe64-unpacking">PE64 unpacking</option>
+          <option value="runtime-artifact">Runtime artifact</option>
+          <option value="seh">SEH</option>
+          <option value="threads">Threads</option>
+          <option value="instructions">Instruction coverage</option>
+          <option value="system-objects">System objects</option>
+          <option value="network">Network behavior</option>
+        </select>
       </div>
       <input
         ref={inputRef}

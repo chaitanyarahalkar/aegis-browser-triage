@@ -4,16 +4,20 @@ import { readFileSync } from 'node:fs'
 const safePe = readFileSync(new URL('../public/fixtures/aegis-safe-dynamic-pe32.exe', import.meta.url))
 const safeMacos = readFileSync(new URL('../../fixtures/aegis-safe-sample-macos', import.meta.url))
 
+async function selectDemo(page: import('@playwright/test').Page, value: string) {
+  await page.getByLabel('Safe demo').selectOption(value)
+}
+
 async function loadSafeDemo(page: import('@playwright/test').Page) {
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use safe PE demo' }).click()
+  await selectDemo(page, 'safe-pe')
   await expect(page.getByText('aegis-safe-dynamic-pe32.exe')).toBeVisible()
   await expect(page.locator('.sample-title')).toContainText('PE · 32-bit X86')
 }
 
 async function loadCodeDemo(page: import('@playwright/test').Page) {
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use code analysis demo' }).click()
+  await selectDemo(page, 'code-analysis')
   await expect(page.getByText('aegis-safe-code-analysis-pe64.exe')).toBeVisible()
   await expect(page.locator('.sample-title')).toContainText('PE · 64-bit X86_64')
 }
@@ -34,7 +38,8 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Look before you launch.' })).toBeVisible()
   await expect(page.getByText('No uploads', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Use safe PE demo' }).click()
+  await expect(page.getByLabel('Safe demo')).toHaveValue('')
+  await selectDemo(page, 'safe-pe')
 
   await expect(page.getByText('aegis-safe-dynamic-pe32.exe')).toBeVisible()
   await expect(page.locator('.sample-title')).toContainText('PE · 32-bit X86')
@@ -63,7 +68,7 @@ test('runs the safe PE through static and dynamic Rust workers', async ({ page }
 
 test('runs Linux ELF64 through the bounded syscall runtime end to end', async ({ page, isMobile }) => {
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use safe Linux demo' }).click()
+  await selectDemo(page, 'safe-linux')
   await expect(page.getByText('nope-safe-dynamic-linux-x64')).toBeVisible()
   await expect(page.locator('.sample-title')).toContainText('ELF · 64-bit X86_64')
 
@@ -147,7 +152,7 @@ test('explores static capabilities, disassembly, and control flow', async ({ pag
 test('runs a PE64 image through the x86-64 interpreter and ABI', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop x64 inspection workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use safe PE64 demo' }).click()
+  await selectDemo(page, 'safe-pe64')
   await expect(page.getByText('aegis-safe-dynamic-pe64.exe')).toBeVisible()
   await expect(page.locator('.sample-title')).toContainText('PE · 64-bit X86_64')
   await runDynamic(page)
@@ -175,7 +180,7 @@ test('runs a PE64 image through the x86-64 interpreter and ABI', async ({ page, 
 test('shows PE64 parity artifacts, state, provenance, threads, and exceptions', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop x64 parity workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use PE64 parity demo' }).click()
+  await selectDemo(page, 'pe64-parity')
   await expect(page.getByText('aegis-safe-parity-pe64.exe')).toBeVisible()
   await expect(page.locator('.sample-title')).toContainText('PE · 64-bit X86_64')
   await runDynamic(page)
@@ -217,7 +222,7 @@ test('shows PE64 parity artifacts, state, provenance, threads, and exceptions', 
 test('identifies a generated PE64 entry candidate and reconstructs runtime imports', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop x64 unpacking workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use PE64 unpacking demo' }).click()
+  await selectDemo(page, 'pe64-unpacking')
   await expect(page.getByText('aegis-safe-unpacking-pe64.exe')).toBeVisible()
   await runDynamic(page)
   await expect(page.getByText('Generated payload entry point identified', { exact: true })).toBeVisible()
@@ -373,7 +378,7 @@ test('shows structured YARA diagnostics without taking down static analysis', as
 test('captures runtime artifacts, scans them with YARA, and gates raw export', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop artifact inspection workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use runtime artifact demo' }).click()
+  await selectDemo(page, 'runtime-artifact')
   await expect(page.getByText('aegis-safe-runtime-artifact-pe32.exe')).toBeVisible()
   await runDynamic(page)
   await page.getByRole('button', { name: /^Unpacking \([2-9]/ }).click()
@@ -410,7 +415,7 @@ test('captures runtime artifacts, scans them with YARA, and gates raw export', a
 test('dispatches a breakpoint through bounded guest SEH', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop exception inspection workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use SEH demo' }).click()
+  await selectDemo(page, 'seh')
   await expect(page.getByText('aegis-safe-seh-pe32.exe')).toBeVisible()
   await runDynamic(page)
   await page.getByRole('button', { name: 'Exceptions (1)' }).click()
@@ -423,7 +428,7 @@ test('dispatches a breakpoint through bounded guest SEH', async ({ page, isMobil
 test('schedules a bounded guest thread with isolated state', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop thread inspection workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use threads demo' }).click()
+  await selectDemo(page, 'threads')
   await expect(page.getByText('aegis-safe-threads-pe32.exe')).toBeVisible()
   await runDynamic(page)
   await page.getByRole('button', { name: 'Threads (2)' }).click()
@@ -436,7 +441,7 @@ test('schedules a bounded guest thread with isolated state', async ({ page, isMo
 test('executes extended integer, SSE2, and x87 instructions', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop instruction coverage workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use instruction demo' }).click()
+  await selectDemo(page, 'instructions')
   await expect(page.getByText('aegis-safe-instructions-pe32.exe')).toBeVisible()
   await runDynamic(page)
   await page.getByRole('button', { name: /^Instructions/ }).click()
@@ -449,7 +454,7 @@ test('executes extended integer, SSE2, and x87 instructions', async ({ page, isM
 test('models bounded synthetic Windows system objects', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop system-object inspection workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use system-object demo' }).click()
+  await selectDemo(page, 'system-objects')
   await expect(page.getByText('aegis-safe-system-objects-pe32.exe')).toBeVisible()
   await runDynamic(page)
   await page.getByRole('button', { name: 'System objects (4)' }).click()
@@ -462,7 +467,7 @@ test('models bounded synthetic Windows system objects', async ({ page, isMobile 
 test('follows scripted network redirects and captures a download artifact', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop network inspection workflow')
   await page.goto('/')
-  await page.getByRole('button', { name: 'Use network demo' }).click()
+  await selectDemo(page, 'network')
   await expect(page.getByText('aegis-safe-network-pe32.exe')).toBeVisible()
   await runDynamic(page)
   await page.getByRole('button', { name: 'Network (2)' }).click()
@@ -500,7 +505,7 @@ test('does not contact third parties or persist sample data', async ({ page }) =
   expect(headers['content-security-policy']).toContain("object-src 'none'")
   expect(headers['content-security-policy']).toContain("connect-src 'self'")
   expect(headers['x-content-type-options']).toBe('nosniff')
-  await page.getByRole('button', { name: 'Use safe PE demo' }).click()
+  await selectDemo(page, 'safe-pe')
   await expect(page.getByText('aegis-safe-dynamic-pe32.exe')).toBeVisible()
   await runDynamic(page)
   const storage = await page.evaluate(async () => ({
@@ -530,7 +535,7 @@ test('keeps the complete mobile workflow usable', async ({ page, isMobile }) => 
   test.skip(!isMobile, 'mobile project only')
   await page.goto('/')
   await expect(page.getByRole('button', { name: 'Choose file' })).toBeVisible()
-  await page.getByRole('button', { name: 'Use safe PE demo' }).click()
+  await selectDemo(page, 'safe-pe')
   await expect(page.getByText('aegis-safe-dynamic-pe32.exe')).toBeVisible()
   await page.getByRole('tab', { name: /^Strings/ }).click()
   await expect(page.getByLabel('Filter extracted values')).toBeVisible()
